@@ -50,3 +50,90 @@ test('reject requests from an unexpected host',async()=>{
  const r=await worker.fetch(new Request('https://evil.example/health'),{OAUTH_ENABLED:'NO'});
  assert.equal(r.status,421);
 });
+
+
+function readyEnv(){
+ return {
+  OAUTH_ENABLED:'YES',
+  YTDB:{prepare(){throw Error('Database should not be accessed in invalid-code test');}},
+  GOOGLE_OAUTH_CLIENT_ID:'example.apps.googleusercontent.com',
+  GOOGLE_OAUTH_CLIENT_SECRET:'example_secret_not_real',
+  OAUTH_ADMIN_CODE:'a-secret-test-owner-code-12345678',
+  OAUTH_TOKEN_KEY_B64:'not_used_in_start'
+ };
+}
+async function extractCsrf(env){
+ const r=await worker.fetch(request('/connect'),env);
+ const body=await r.text();
+ const code=body.match(/name="csrf" value="([^"]+)"/)?.[1];
+ const cookie=r.headers.get('set-cookie')?.split(';')[0];
+ assert.equal(r.status,200);
+ assert.ok(code?.length>=30);
+ assert.equal(cookie?.split('=')[1],code);
+ return {code,cookie};
+}
+test('Google connect has an HttpOnly same-site CSRF cookie bound to its form',async()=>{
+ const r=await worker.fetch(request('/connect'),readyEnv());
+ const text=await r.text();
+ const cookie=r.headers.get('set-cookie')||'';
+ assert.match(text,/name="csrf" value="/);
+ assert.match(cookie,/__Host-ihyt_csrf=/);
+ assert.match(cookie,/Secure/);
+ assert.match(cookie,/HttpOnly/);
+ assert.match(cookie,/SameSite=Strict/);
+});
+test('embedded browser null Origin with valid CSRF produces a clear wrong-code error (not 500)',async()=>{
+ const env=readyEnv();
+ const {code,cookie}=await extractCsrf(env);
+ const body=new URLSearchParams({code:'definitely-incorrect-admin-code',csrf:code});
+ const r=await worker.fetch(request('/oauth/start',{
+  method:'POST',headers:{'content-type':'application/x-www-form-urlencoded','cookie':cookie,'origin':'null'},body
+ }),env);
+ assert.equal(r.status,403);
+ assert.match(await r.text(),/C[oó]digo incorrecto/);
+});
+test('missing or mismatched CSRF fails before verifying owner password',async()=>{
+ const env=readyEnv();
+ const {code,cookie}=await extractCsrf(env);
+ const r=await worker.fetch(request('/oauth/start',{
+  method:'POST',headers:{'content-type':'application/x-www-form-urlencoded','cookie':cookie,'origin':'null'},
+  body:new URLSearchParams({csrf:'not-the-issued-token',code:env.OAUTH_ADMIN_CODE})
+ }),env);
+ assert.equal(r.status,403);
+ assert.equal((await r.json()).error,'session_token_mismatch');
+});
+test('explicit foreign site fails even with valid CSRF token',async()=>{
+ const env=readyEnv(), {code,cookie}=await extractCsrf(env);
+ const r=await worker.fetch(request('/oauth/start',{
+  method:'POST',headers:{'content-type':'application/x-www-form-urlencoded','cookie':cookie,'origin':'https://evil.example','sec-fetch-site':'cross-site'},
+  body:new URLSearchParams({csrf:code,code:env.OAUTH_ADMIN_CODE})
+ }),env);
+ assert.equal(r.status,403);
+ assert.equal((await r.json()).error,'form_origin_rejected');
+});
+test('successful owner approval creates one-time Google redirect without changing videos',async()=>{
+ const env=readyEnv();
+ let inserts=0;
+ env.YTDB={
+  prepare(sql){return {
+   first:async()=>null,
+   bind(...args){return {
+    run:async()=>{inserts++;return {success:true};}
+   }}
+  }}
+ };
+ const {code,cookie}=await extractCsrf(env);
+ const r=await worker.fetch(request('/oauth/start',{
+  method:'POST',headers:{'content-type':'application/x-www-form-urlencoded','cookie':cookie,'origin':'null'},
+  body:new URLSearchParams({csrf:code,code:env.OAUTH_ADMIN_CODE})
+ }),env);
+ assert.equal(r.status,303);
+ const url=r.headers.get('location')||'';
+ assert.ok(url.startsWith('https://accounts.google.com/o/oauth2/v2/auth?'));
+ const parts=new URL(url);
+ assert.equal(parts.searchParams.get('redirect_uri'),TEST.REDIRECT);
+ assert.equal(parts.searchParams.get('scope'),TEST.SCOPE);
+ assert.equal(parts.searchParams.get('code_challenge_method'),'S256');
+ assert.equal(inserts,1);
+ assert.match(r.headers.get('set-cookie')||'',/ihyt_bind=/);
+});
