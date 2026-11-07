@@ -7,6 +7,7 @@ from pathlib import Path
 from .metadata import prepare
 from .thumbnail import create_thumbnail
 from .youtube import client_from_existing_token, apply_package
+from .uploads import scan_new_uploads
 
 
 def main():
@@ -22,6 +23,12 @@ def main():
     prep.add_argument("--photo-rights", choices=["owned", "licensed"])
     prep.add_argument("--thumb-text", default="THE FULL STORY")
     prep.add_argument("--out", type=Path, required=True)
+    scan = sub.add_parser("scan", help="Read-only detection of new owner-channel videos (never edits YouTube)")
+    scan.add_argument("--token", type=Path, required=True, help="Private existing YouTube OAuth token")
+    scan.add_argument("--channel-id", required=True, help="Channel allowlist, starts with UC")
+    scan.add_argument("--state", type=Path, default=Path("private/youtube-upload-state.json"))
+    scan.add_argument("--max-items", type=int, default=50)
+    scan.add_argument("--min-seconds", type=int, default=240, help="Ignore Shorts and other videos shorter than this")
     approve = sub.add_parser("approve")
     approve.add_argument("--package", type=Path, required=True)
     approve.add_argument("--confirm-reviewed", action="store_true", help="I checked the video, factual accuracy, thumbnail and rights")
@@ -43,6 +50,11 @@ def main():
                 package.update(thumbnail_path=str(p.resolve()), thumbnail_status="generated_from_authorized_image", image_rights=a.photo_rights)
             (a.out/"package.json").write_text(json.dumps(package, ensure_ascii=False, indent=2), encoding="utf-8")
             print(json.dumps({"saved": str(a.out / "package.json"), "title_candidates": package["title_candidates"], "thumbnail_status":package["thumbnail_status"],"published":False},indent=2))
+        elif a.action == "scan":
+            client = client_from_existing_token(a.token)
+            result = scan_new_uploads(client, expected_channel=a.channel_id, state_path=a.state,
+                                      max_items=a.max_items, min_seconds=a.min_seconds)
+            print(json.dumps(result, ensure_ascii=False, indent=2))
         elif a.action == "approve":
             if not a.confirm_reviewed:
                 raise ValueError("Utiliza --confirm-reviewed después de revisar todo el paquete")
