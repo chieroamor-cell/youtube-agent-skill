@@ -27,11 +27,20 @@ const ready=e=>e.OAUTH_ENABLED==='YES'&&!!e.YTDB&&
  typeof e.GOOGLE_OAUTH_CLIENT_SECRET==='string'&&e.GOOGLE_OAUTH_CLIENT_SECRET.length>8&&
  typeof e.OAUTH_ADMIN_CODE==='string'&&e.OAUTH_ADMIN_CODE.length>=24&&
  typeof e.OAUTH_TOKEN_KEY_B64==='string';
+const CSRF_COOKIE='__Host-ihyt_csrf';
+const csrfHeader=value=>CSRF_COOKIE+'='+value+'; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=600';
+const csrfInput=value=>'<input type="hidden" name="csrf" value="'+escapeHtml(value)+'">';
 const form=async r=>{
- if((r.headers.get('origin')||new URL(REDIRECT).origin)!==new URL(REDIRECT).origin)throw Error('Invalid origin');
+ const origin=r.headers.get('origin');
+ if(origin&&origin!=='null'&&origin!==new URL(REDIRECT).origin)throw Error('Invalid origin');
+ if(r.headers.get('sec-fetch-site')==='cross-site')throw Error('Cross-site submission rejected');
  if(!(r.headers.get('content-type')||'').startsWith('application/x-www-form-urlencoded'))throw Error('Invalid content type');
  if(Number(r.headers.get('content-length')||0)>4096)throw Error('Payload too large');
- const t=await r.text();if(t.length>4096)throw Error('Payload too large');return new URLSearchParams(t);
+ const t=await r.text();if(t.length>4096)throw Error('Payload too large');
+ const f=new URLSearchParams(t),supplied=f.get('csrf')||'',bound=cookie(r,CSRF_COOKIE);
+ if(!/^[A-Za-z0-9_-]{30,90}$/.test(supplied)||!await eq(supplied,bound))
+    throw Error('Invalid CSRF token');
+ return f;
 };
 const cookie=(r,name)=>{
  for(const c of (r.headers.get('cookie')||'').split(';')){
@@ -96,9 +105,12 @@ async function callback(request,env){
  const name=String(selected.snippet?.title||'Canal sin título').slice(0,120);
  await env.YTDB.prepare("INSERT OR REPLACE INTO oauth_channel(singleton,channel_id,channel_title,token_iv,token_ct,status,created_at) VALUES(1,?,?,?,?, 'pending',?)")
   .bind(selected.id,name,encrypted.iv,encrypted.ct,Math.floor(Date.now()/1000)).run();
+ const csrf=rnd(32);
  const inside='<p>Google identificó este canal. <strong>Comprueba que es el mismo donde publicas los Shorts.</strong></p><p><strong>'+escapeHtml(name)+'</strong><br><code>'+escapeHtml(selected.id)+'</code></p><p>Por ahora ningún vídeo ha cambiado.</p>'+
- '<form action="/oauth/confirm" method="post"><input type="hidden" name="channel" value="'+escapeHtml(selected.id)+'"><label>Código de administración</label><input type="password" name="code" minlength="24" required autocomplete="off"><button>Confirmar este canal</button></form>';
- return html(inside,200,{'set-cookie':'ihyt_bind=; Secure; HttpOnly; SameSite=Lax; Path=/oauth; Max-Age=0'});
+ '<form action="/oauth/confirm" method="post">'+csrfInput(csrf)+'<input type="hidden" name="channel" value="'+escapeHtml(selected.id)+'"><label>Código de administración</label><input type="password" name="code" minlength="24" required autocomplete="off"><button>Confirmar este canal</button></form>';
+ const response=html(inside,200,{'set-cookie':csrfHeader(csrf)});
+ response.headers.append('set-cookie','ihyt_bind=; Secure; HttpOnly; SameSite=Lax; Path=/oauth; Max-Age=0');
+ return response;
 }
 async function confirm(request,env){
  if(!ready(env))return html('<p>Configuración pendiente.</p>',503);
@@ -118,8 +130,10 @@ export default {
    if(u.pathname==='/health'&&request.method==='GET')return json({service:'infamoushub-youtube-connect',oauth_configured:!!ready(env),edits_enabled:false,uploads_enabled:false,publication_enabled:false});
    if((u.pathname==='/'||u.pathname==='/connect')&&request.method==='GET'){
     if(!ready(env))return html('<p>El conector está preparado en modo seguro. Falta configurar y autorizar Google OAuth.</p><p>URI de retorno en Google Cloud:<br><code>'+escapeHtml(REDIRECT)+'</code></p>');
+    const csrf=rnd(32);
     return html('<p>Autoriza exactamente el canal donde tienes los Shorts. Google pedirá un permiso amplio para gestionar YouTube, aunque este conector solo verifica el canal.</p>'+
-     '<form action="/oauth/start" method="post"><label>Código de administración</label><input type="password" name="code" minlength="24" required autocomplete="off"><button>Conectar con Google</button></form>');
+     '<form action="/oauth/start" method="post">'+csrfInput(csrf)+'<label>Código de administración</label><input type="password" name="code" minlength="24" required autocomplete="off"><button>Conectar con Google</button></form>',200,
+     {'set-cookie':csrfHeader(csrf)});
    }
    if(u.pathname==='/oauth/start'&&request.method==='POST')return await start(request,env);
    if(u.pathname==='/oauth/callback'&&request.method==='GET')return await callback(request,env);
@@ -127,7 +141,7 @@ export default {
    return json({error:'not_found'},404);
   }catch(e){
    // Safe error categories only: never expose OAuth codes, tokens, headers or submitted passwords.
-   const known={'Invalid origin':'form_origin_rejected','Invalid content type':'form_content_type_rejected','Payload too large':'body_limit_exceeded'};
+   const known={'Invalid origin':'form_origin_rejected','Cross-site submission rejected':'cross_site_rejected','Invalid CSRF token':'session_token_mismatch','Invalid content type':'form_content_type_rejected','Payload too large':'body_limit_exceeded'};
    const error=known[e?.message]||'internal_error';
    return json({error},error==='internal_error'?500:403);
   }
