@@ -125,7 +125,12 @@ export default {
    if(u.pathname==='/oauth/callback'&&request.method==='GET')return await callback(request,env);
    if(u.pathname==='/oauth/confirm'&&request.method==='POST')return await confirm(request,env);
    return json({error:'not_found'},404);
-  }catch(e){return json({error:'authorization_blocked_safely'},500);}
+  }catch(e){
+   // Safe error categories only: never expose OAuth codes, tokens, headers or submitted passwords.
+   const known={'Invalid origin':'form_origin_rejected','Invalid content type':'form_content_type_rejected','Payload too large':'body_limit_exceeded'};
+   const error=known[e?.message]||'internal_error';
+   return json({error},error==='internal_error'?500:403);
+  }
  }
 };
 export const TEST={REDIRECT,SCOPE,escapeHtml,ready};
