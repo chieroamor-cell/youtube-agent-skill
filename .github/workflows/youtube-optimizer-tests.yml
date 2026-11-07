@@ -25,3 +25,6 @@ jobs:
       - name: Unit tests with mocked YouTube API (NO writes, uploads or tokens)
         working-directory: infamoushub-youtube-optimizer
         run: python -m unittest discover -s tests -v
+      - name: Test disabled Cloudflare OAuth connector (offline only)
+        working-directory: infamoushub-youtube-optimizer
+        run: node --test cloudflare/yt-connect.test.mjs
