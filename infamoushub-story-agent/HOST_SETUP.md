@@ -42,3 +42,15 @@ An optional separate-provider possibility is Oracle Cloud Always Free ARM comput
 ## Current Cloudflare staging state
 
 `infamoushub-story-coordinator` has `SCHEDULE_ENABLED=NO`, zero Cron Triggers, zero jobs and no installed renderer token. Do not turn on schedules before actual video QA and private upload tests. The original Shorts and Pinterest projects remain in different accounts.
+
+
+## Check your own computer before downloading any models (v0.3.2)
+
+These small scripts do **not** install programs, charge money, send information or upload videos.
+
+- Windows PowerShell: `powershell -NoProfile -File .\scripts\check-computer.ps1`
+- macOS/Linux Terminal: `sh scripts/check-computer.sh`
+
+Start from the `infamoushub-story-agent` folder. If your PowerShell execution policy blocks a script, **do not bypass security settings**; ask for a safe command-by-command check instead.
+
+The results identify missing Python, FFmpeg, Ollama, Piper and English voice files, plus approximate RAM and free disk space. They do not prove your hardware can render an entire video. Only share the anonymized `[OK]`, `[MISSING]` and `[INFO]` lines; never share API keys or login information.

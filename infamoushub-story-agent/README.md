@@ -1,4 +1,4 @@
-# InfamousHub Story Agent — isolated local producer v0.3.1
+# InfamousHub Story Agent — isolated local producer v0.3.2
 
 Original English-language **story videos** (8–12 minutes), in the style of punchy "the complete
 story of ..." biographies and company rise/fall stories. **Not** slow academic documentaries.

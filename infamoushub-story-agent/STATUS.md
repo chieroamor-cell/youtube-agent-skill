@@ -29,3 +29,8 @@ Set up a computer capable of Ollama, Piper and FFmpeg; produce one real English 
 - Piper refuses TTS with a missing sidecar. Ollama endpoint validation blocks disguised remote URLs and redirects.
 - HOST_SETUP.md documents safe Windows/macOS/Linux installation options and free-vs-paid rendering limitations.
 - Cloudflare scheduling remains OFF; no public YouTube uploads.
+
+## v0.3.2 — hardware readiness
+
+- Added non-installing Windows PowerShell and macOS/Linux shell readiness checks; no model download or publication triggered.
+- Continued protection: Cloudflare scheduling OFF, no YouTube OAuth/private upload test yet, no full narrated render confirmed.
