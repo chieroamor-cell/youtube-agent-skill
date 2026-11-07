@@ -1,0 +1,14 @@
+# Never commit OAuth tokens, licensed downloads, generated videos, secrets
+private/
+work/
+*.onnx
+*.onnx.json
+*.mp4
+*.wav
+*.srt
+*.webm
+__pycache__/
+.pytest_cache/
+.env
+*.token.json
+client_secrets.json
