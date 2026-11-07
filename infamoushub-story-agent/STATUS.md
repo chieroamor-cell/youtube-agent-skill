@@ -1,4 +1,4 @@
-# InfamousHub Story Agent — v0.3.0 (2026-11-07)
+# InfamousHub Story Agent — v0.3.1 (2026-11-07)
 
 ## Verified
 
@@ -22,3 +22,10 @@
 ## Next safety gate
 
 Set up a computer capable of Ollama, Piper and FFmpeg; produce one real English story, inspect its research/visual rights, pass verified review approval and perform a private YouTube test upload. Only then consider cron scheduling and publication.
+
+## v0.3.1 — local-host readiness
+
+- Host diagnostics now check both Piper voice files and report local RAM/free storage without exposing identifiers.
+- Piper refuses TTS with a missing sidecar. Ollama endpoint validation blocks disguised remote URLs and redirects.
+- HOST_SETUP.md documents safe Windows/macOS/Linux installation options and free-vs-paid rendering limitations.
+- Cloudflare scheduling remains OFF; no public YouTube uploads.

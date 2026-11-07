@@ -57,6 +57,8 @@ def concat_list(paths: list[Path], destination: Path) -> Path:
 def speak_scene(narration: str, directory: Path, *, voice: Path, piper_binary: str = "piper") -> tuple[Path, list[tuple[str, float]]]:
     if not voice.exists():
         raise StoryError(f"Piper voice model missing: {voice}")
+    if not Path(str(voice) + ".json").is_file():
+        raise StoryError("Piper voice requires its matching .onnx.json config file")
     if not directory.exists():
         directory.mkdir(parents=True)
     binary = require_binary(piper_binary)

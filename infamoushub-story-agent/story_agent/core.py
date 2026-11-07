@@ -20,14 +20,22 @@ class StoryError(ValueError):
     pass
 
 
-def get_json(url: str, *, timeout: int = 30, payload: dict | None = None) -> dict:
+def get_json(url: str, *, timeout: int = 30, payload: dict | None = None, no_redirect: bool = False) -> dict:
     data = None if payload is None else json.dumps(payload).encode("utf-8")
     request = urllib.request.Request(
         url, data=data,
         headers={"User-Agent": USER_AGENT, "Accept": "application/json", **({"Content-Type": "application/json"} if data else {})},
     )
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        if no_redirect:
+            class NoRedirect(urllib.request.HTTPRedirectHandler):
+                def redirect_request(self, request, fp, code, message, headers, newurl):
+                    return None
+            opener = urllib.request.build_opener(NoRedirect())
+            response = opener.open(request, timeout=timeout)
+        else:
+            response = urllib.request.urlopen(request, timeout=timeout)
+        with response:
             return json.load(response)
     except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
         raise StoryError(f"Could not access {urllib.parse.urlsplit(url).netloc}: {exc}") from exc
@@ -70,8 +78,16 @@ def _extract_object(raw: str) -> dict:
 
 def generate_story(research: dict, *, model: str = "llama3.1:8b", ollama_url: str = "http://localhost:11434/api/generate") -> dict:
     """Generate an original lively story. The model must be installed locally by the user."""
-    if not (ollama_url.startswith("http://127.0.0.1:") or ollama_url.startswith("http://localhost:")):
-        raise StoryError("Only a local Ollama endpoint is allowed: no external paid API or token sharing")
+    endpoint = urllib.parse.urlsplit(ollama_url)
+    try:
+        local_port = endpoint.port
+    except ValueError as exc:
+        raise StoryError("Malformed local Ollama endpoint port") from exc
+    if (endpoint.scheme != "http" or endpoint.hostname not in ("127.0.0.1", "localhost")
+            or endpoint.username is not None or endpoint.password is not None
+            or local_port != 11434 or endpoint.path != "/api/generate"
+            or endpoint.query or endpoint.fragment):
+        raise StoryError("Ollama must use http://127.0.0.1:11434/api/generate; remote endpoints not allowed")
     prompt = f"""You are writing an ORIGINAL English YouTube story video for InfamousHub. Not a dry documentary.
 Use exactly the research below as the factual source. Never invent quotes, dates, salaries,
 statistics, crimes, scandals, or relationships. If a fact is uncertain, omit it.
@@ -91,7 +107,7 @@ Topic: {research['topic']}
 Source: {research['source_url']}
 Research excerpt:\n{research['source_text']}
 """
-    response = get_json(ollama_url, timeout=900, payload={
+    response = get_json(ollama_url, timeout=900, no_redirect=True, payload={
         "model": model, "prompt": prompt, "stream": False, "format": "json",
         "options": {"temperature": 0.6, "num_predict": 10000},
     })

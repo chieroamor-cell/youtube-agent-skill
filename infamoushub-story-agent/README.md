@@ -1,4 +1,4 @@
-# InfamousHub Story Agent — isolated local producer v0.3.0
+# InfamousHub Story Agent — isolated local producer v0.3.1
 
 Original English-language **story videos** (8–12 minutes), in the style of punchy "the complete
 story of ..." biographies and company rise/fall stories. **Not** slow academic documentaries.
@@ -51,7 +51,7 @@ python -m story_agent diagnose --voice voices/en_US-lessac-medium.onnx
 python -m unittest discover -s tests -v
 ```
 
-The diagnostic never accesses paid APIs or publishes videos. It reports missing local FFmpeg, Piper, voice model, and Ollama model. In our test environment FFmpeg works, but Piper, its English voice model and local Ollama are missing, so a *real narrated full-length* end-to-end run is **blocked**, not passed. A mocked 8-minute-timeline test is included and is not a finished video.
+The diagnostic also checks the matching `.onnx.json` Piper voice configuration and reports local RAM/free disk advice. See [HOST_SETUP.md](HOST_SETUP.md). It never accesses paid APIs or publishes videos. It reports missing local FFmpeg, Piper, voice model, and Ollama model. In our test environment FFmpeg works, but Piper, its English voice model and local Ollama are missing, so a *real narrated full-length* end-to-end run is **blocked**, not passed. A mocked 8-minute-timeline test is included and is not a finished video.
 
 ## Run the new local production pipeline (v0.3.0)
 
