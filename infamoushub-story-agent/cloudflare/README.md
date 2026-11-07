@@ -1,13 +1,14 @@
-# Cloudflare account for orchestration (not deployed)
+# InfamousHub Story Agent — Cloudflare staging coordinator (v0.2.0)
 
-The new Cloudflare account is reserved for job scheduling, status and optional job queueing.
-The CPU-intensive steps (local Ollama, Piper, FFmpeg) must run on an owned computer or other
-explicitly authorized machine. A Cloudflare Worker cannot render an 8–12 minute video end-to-end
-on the Free tier.
+The new independent Cloudflare account now contains:
+- Worker script: `infamoushub-story-coordinator`
+- D1: `infamoushub-story-jobs` in EU jurisdiction
+- D1 binding: `DB`
+- `SCHEDULE_ENABLED=NO` (**disabled**)
+- Zero Cron Triggers and zero scheduled jobs.
 
-No Cloudflare resources, billing options, queues or public endpoints have been created by this package.
-Before a deploy, verify the correct new Cloudflare account is selected, explicitly confirm limits,
-and connect only the new project. Never use the existing Shorts/Pinterest account.
+This is a **staging metadata coordinator only**, not a complete automatic YouTube video creator. The Worker accepts no public publication requests; it has no YouTube OAuth tokens and does not generate videos or upload to YouTube. Health is read-only. Protected job routes require a 32+ character `RENDERER_TOKEN`, which is **not configured** yet. No secret is stored in GitHub.
 
-Recommended next implementation milestone: authenticated job queue + health/status page for a
-local renderer. Do not put YouTube OAuth tokens or Google client secrets in a public Worker route.
+Source and SQL are in `coordinator.mjs` and `schema.sql`; tests in `coordinator.test.mjs`. GitHub CI verifies safety with `node --test`. It must remain disabled until a local/self-hosted renderer has finished a real original English story, verified sources and rights, and passed a private YouTube upload test.
+
+Cloudflare Workers are only for coordinating job status, not long FFmpeg rendering. This setup made no purchase or subscription; actual free-tier availability and future consumption must be monitored. Existing Shorts and Pinterest bots remain untouched.
