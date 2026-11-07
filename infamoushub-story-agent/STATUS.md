@@ -1,32 +1,33 @@
-# InfamousHub Story Agent — status (2026-11-07, v0.1.1)
+# InfamousHub Story Agent — v0.2.0 (2026-11-07)
 
-## Verified
+## Verified on the new accounts
 
-- GitHub account: `chieroamor-cell`.
-- Fork: `chieroamor-cell/youtube-agent-skill`; branch: `feature/infamoushub-story-videos`.
-- GitHub App authorization now installed; feature branch created successfully.
-- Upstream `main` branch and all 11 YouTube Agent Skill commands are untouched.
-- Fourteen local Python unit and smoke tests passed; one short FFmpeg clip was generated.
-- Full-length mock 8m30s timeline passes orchestration (no real 8m30s video was rendered).
-- Licenses and asset paths are validated before rendering; audio duration is checked before video encoding.
-- Read-only local dependency diagnostics added (`python -m story_agent diagnose`).
-- Public publishing and unattended rendering remain disabled.
+- GitHub: `chieroamor-cell/youtube-agent-skill`, feature branch `feature/infamoushub-story-videos`, draft PR #1.
+- Original 11 YouTube Agent Skills and `main` untouched.
+- Python media/safety tests: 14 local tests passed.
+- Cloudflare coordinator Node.js tests: 8 passed locally and in GitHub Actions.
+- GitHub Actions run 42366138320: completed successfully.
+- Separate Cloudflare account: `Mentalmillonario@gmail.com's Account`.
+- D1 database: `infamoushub-story-jobs` (EU jurisdiction); schema installed and database query verified.
+- Worker script: `infamoushub-story-coordinator`, D1 binding `DB`, `SCHEDULE_ENABLED=NO`.
+- Cloudflare cron triggers: **0**; D1 jobs: **0**; no renderer token, video render or YouTube publishing.
+- Staging coordinator code checked into the feature branch; no automatic uploads enabled.
+- Project goal: entertaining original 8–12 minute English story videos, twice weekly, without affecting existing Shorts/Pinterest bots.
 
-## Not yet tested or implemented end to end
+## Not verified
 
-- Live Wikipedia/Wikimedia calls and license audit for a full story.
-- Local Ollama LLM generation and Piper narration in a real workstation environment.
-- Complete 8–12-minute video rendering and editorial quality checks.
-- YouTube OAuth private test upload, API verification, or public publishing.
-- Separate Cloudflare scheduling, durable queue, retries, licensed motion video and music.
-- Separate Cloudflare account verified, currently zero Worker scripts. No deployment or paid product enabled.
-- Container cannot access external network or download local voice/model files; Ollama and Piper are unavailable here.
+- Original 8–12 minute fully narrated rendered video (local Ollama/Piper/voice models unavailable here).
+- End-to-end rights and factual editorial approval with real licensed photo/video assets.
+- Local/self-hosted worker connected to Cloudflare.
+- YouTube OAuth private test upload and publishing approval.
+- Operating within guaranteed 0 CHF subscription cost over time: plan and consumption must be monitored; local electricity and hardware not free.
 
-## Next steps
+## Next acceptance
 
-1. Review this feature branch and run the offline tests.
-2. Configure a self-hosted, legal-asset-aware video renderer (not mass video rendering in GitHub-hosted Actions).
-3. Finish a single English story video, verify quality and rights, and perform a private YouTube test upload.
-4. Add scheduling and publication only after those gates.
+1. Provide an owned computer/authorized self-hosted runner with Python, Ollama, Piper, FFmpeg and English voice.
+2. Generate a full original English story; verify sources, image rights and complete 8–12 min quality.
+3. Connect the renderer to the authenticated coordinator, keeping schedule disabled.
+4. Perform YouTube OAuth **private** test upload, verify channel selection and content.
+5. Only after approval consider switching on the two weekly job slots. Never enable public publishing merely because CI passes.
 
-Cost objective: 0 CHF in paid subscriptions; requires own local compute, storage, network and electricity.
+All 11 original skills remain unaffected. No paid products were ordered or activated by the bot setup.
