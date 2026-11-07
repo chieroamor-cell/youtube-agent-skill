@@ -3,14 +3,34 @@
   "format": "original narrative histories, NOT slow documentaries",
   "language": "en",
   "style": "fast-paced, emotional, accurate, cinematic",
-  "target_duration_minutes": {"min": 8, "max": 12},
+  "target_duration_minutes": {
+    "min": 8,
+    "max": 12
+  },
   "weekly_target": 2,
-  "categories": ["Famous People", "Sports", "Companies", "Games", "History", "Entertainment", "Technology"],
+  "categories": [
+    "Famous People",
+    "Sports",
+    "Companies",
+    "Games",
+    "History",
+    "Entertainment",
+    "Technology"
+  ],
   "local_script_model": "llama3.1:8b",
   "voice": "Piper English onnx stored locally",
   "asset_policy": "Wikimedia Commons only with recorded, allowed licenses",
   "public_uploads_enabled": false,
   "requires_editorial_approval": true,
-  "cloudflare_deployed": false,
-  "github_actions_video_render": false
+  "github_actions_video_render": false,
+  "local_pipeline_version": "0.3.0",
+  "cloudflare_staging_deployed": true,
+  "cloudflare_schedule_enabled": false,
+  "requires_manual_review_receipt": true,
+  "topic_history": "private/topic-history.json",
+  "local_command": "python -m story_agent produce \"Nintendo\" --workdir work/nintendo-story-001 --voice voices/en_US-lessac-medium.onnx",
+  "upstream_skills_used_for_advisory": [
+    "yt-script/hookscore.py",
+    "yt-package/title.py"
+  ]
 }

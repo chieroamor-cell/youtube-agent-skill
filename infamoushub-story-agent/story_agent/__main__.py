@@ -10,6 +10,9 @@ from .core import StoryError, generate_story, read_json, validate_story, wikiped
 from .media import render_story
 from .youtube import upload_video
 from .preflight import diagnose
+from .review import approve_render, require_current_approval
+from .pipeline import run_production
+from .cloudflare_client import work_once
 
 
 def arguments():
@@ -38,6 +41,25 @@ def arguments():
     diag = cmds.add_parser("diagnose", help="Read-only check of local rendering dependencies")
     diag.add_argument("--voice", type=Path, help="Path to a downloaded English Piper .onnx model")
     diag.add_argument("--model", default="llama3.1:8b")
+
+    produce = cmds.add_parser("produce", help="Make one complete local English video, leave unpublished for review")
+    produce.add_argument("topic", help="Subject for one original 8-12m story")
+    produce.add_argument("--workdir", type=Path, required=True, help="Unique EMPTY directory for this story")
+    produce.add_argument("--voice", type=Path, required=True)
+    produce.add_argument("--model", default="llama3.1:8b")
+    produce.add_argument("--piper", default="piper")
+
+    approve = cmds.add_parser("approve", help="Bind explicit editorial review to exact MP4/story/credits")
+    approve.add_argument("--workdir", type=Path, required=True)
+    approve.add_argument("--confirm", action="store_true", help="I reviewed the whole video, factual sources and rights")
+
+    work = cmds.add_parser("cloudflare-once", help="Safely claim at most one job from the new Cloudflare account")
+    work.add_argument("--voice", type=Path, required=True)
+    work.add_argument("--topics", type=Path, default=Path("topics.example.json"))
+    work.add_argument("--output-root", type=Path, default=Path("work"))
+    work.add_argument("--history", type=Path, default=Path("private/topic-history.json"))
+    work.add_argument("--model", default="llama3.1:8b")
+    work.add_argument("--piper", default="piper")
 
     upload = cmds.add_parser("upload", help="Upload via your own YouTube OAuth (private by default)")
     upload.add_argument("--workdir", type=Path, default=Path("work"))
@@ -75,6 +97,15 @@ def main():
             validate_story(story)
             result = render_story(story, read_json(a.workdir / "assets.json"), a.workdir, piper_voice=a.voice, piper_binary=a.piper)
             print(json.dumps(result, indent=2))
+        elif a.command == "produce":
+            print(json.dumps(run_production(a.topic, a.workdir, voice=a.voice, model=a.model, piper=a.piper), indent=2))
+        elif a.command == "approve":
+            print(json.dumps(approve_render(a.workdir, editor_confirmed=a.confirm), indent=2))
+        elif a.command == "cloudflare-once":
+            import os
+            base = os.environ.get("STORY_COORDINATOR_URL", "")
+            token = os.environ.get("STORY_RENDERER_TOKEN", "")
+            print(json.dumps(work_once(base=base, token=token, voice=a.voice, topics_file=a.topics, output_root=a.output_root, history_file=a.history, model=a.model, piper=a.piper), indent=2))
         elif a.command == "upload":
             story = read_json(a.workdir / "story.json")
             validate_story(story)
@@ -83,11 +114,10 @@ def main():
             details = read_json(a.workdir / "render-report.json")
             if not 480 <= details["duration_seconds"] <= 720:
                 raise StoryError("Video length gate failed")
-            if not (a.workdir / "review-approved.txt").is_file():
-                raise StoryError("Human editorial approval missing: create work/review-approved.txt only after checking facts and image rights")
+            require_current_approval(a.workdir)
             credits = (a.workdir / "ATTRIBUTIONS.md").read_text(encoding="utf-8")
             print(json.dumps(upload_video(a.workdir / "story-video.mp4", story, client_secrets=a.credentials, token_file=a.token, privacy=a.privacy, allow_public=a.allow_public, description_credits=credits), indent=2))
-    except (StoryError, OSError, KeyError, ValueError) as exc:
+    except (StoryError, OSError, KeyError, ValueError, json.JSONDecodeError) as exc:
         print(f"Blocked safely: {exc}", file=sys.stderr)
         return 2
     return 0

@@ -1,2 +1,2 @@
-"""InfamousHub original-story video generator (no unattended public uploads by default)."""
-__version__ = "0.1.0"
+"""InfamousHub original-story video generator (publishing disabled by default)."""
+__version__ = "0.3.0"

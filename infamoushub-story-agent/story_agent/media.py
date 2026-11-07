@@ -159,10 +159,16 @@ def render_story(story: dict, manifest: dict, workdir: Path, *, piper_voice: Pat
     write_srt(timings, subtitle)
     filelist = concat_list(clips, scenes_dir / "combined.mp4")
     out = workdir / "story-video.mp4"
-    run([require_binary("ffmpeg"), "-hide_banner", "-loglevel", "error", "-y", "-f", "concat", "-safe", "0", "-i", str(filelist), "-c", "copy", "-movflags", "+faststart", str(out)], timeout=900)
+    # Mux captions as an optional English subtitle track without another video encode.
+    # Keep captions.en.srt as a separate file for YouTube upload/review.
+    run([require_binary("ffmpeg"), "-hide_banner", "-loglevel", "error", "-y",
+         "-f", "concat", "-safe", "0", "-i", str(filelist),
+         "-i", str(subtitle), "-map", "0:v:0", "-map", "0:a:0", "-map", "1:s:0",
+         "-c:v", "copy", "-c:a", "copy", "-c:s", "mov_text", "-metadata:s:s:0", "language=eng",
+         "-movflags", "+faststart", str(out)], timeout=900)
     real = duration(out)
     if not (minimum - 3 <= real <= maximum + 3):
         raise StoryError(f"Final video duration unexpectedly {real:.1f}s. Check render before publishing")
-    report = {"video": str(out), "subtitle": str(subtitle), "duration_seconds": round(real, 2), "video_size_bytes": out.stat().st_size, "scene_count": len(clips), "narration_seconds": round(total, 2), "published": False}
+    report = {"video": str(out), "subtitle": str(subtitle), "duration_seconds": round(real, 2), "video_size_bytes": out.stat().st_size, "scene_count": len(clips), "narration_seconds": round(total, 2), "subtitles_embedded": True, "published": False}
     (workdir / "render-report.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     return report
