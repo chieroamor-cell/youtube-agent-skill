@@ -50,6 +50,11 @@ export async function discoverNewLongVideos(env,readUploads,options={}){
   return {status:code,created:0};
  }
  const channel=feed.channel_id,videos=Array.isArray(feed.long_videos)?feed.long_videos.slice(0,50):[];
+ // Internal owner-only inventory: actual privacy/title/description from OAuth APIs.
+ // Never exposed publicly or used for any YouTube write. Upsert only changed records.
+ if(env.CAPTURE_INVENTORY==='YES'){
+  try{await saveOwnerInventory(env,channel,videos);}catch(e){await recordError('inventory_sync_failed');return {status:'inventory_sync_failed',created:0};}
+ }
  const initial=await env.YTDB.prepare('SELECT channel_id FROM optimizer_watch_state WHERE channel_id=?').bind(channel).first();
  const baseline=!initial;
  const valid=videos.filter(v=>/^[A-Za-z0-9_-]{11}$/.test(v?.id||'')&&Number.isInteger(v.seconds)&&v.seconds>=240);
@@ -95,6 +100,24 @@ export async function discoverNewLongVideos(env,readUploads,options={}){
   checked:valid.length,baseline_seen:baseline?valid.length:0,created,skipped,
   edits_to_youtube:0,thumbnails_uploaded:0,automatic_publication:false};
 }
+export async function saveOwnerInventory(env,channelId,videos){
+ if(!/^UC[A-Za-z0-9_-]{10,}$/.test(channelId))throw Error('Invalid owner channel');
+ if(!env?.YTDB?.batch)throw Error('Missing internal D1 binding');
+ const list=(Array.isArray(videos)?videos:[]).filter(v=>/^[A-Za-z0-9_-]{11}$/.test(v?.id||'')&&
+  Number.isInteger(v.seconds)&&v.seconds>=240).slice(0,50);
+ if(!list.length)return {stored:0};
+ const stmts=list.map(v=>env.YTDB.prepare(
+  "INSERT INTO optimizer_video_inventory(video_id,channel_id,title,privacy,duration_seconds,description,published_at,last_checked_at) "+
+  "VALUES(?,?,?,?,?,?,?,datetime('now')) "+
+  "ON CONFLICT(video_id) DO UPDATE SET title=excluded.title,privacy=excluded.privacy,"+
+  "duration_seconds=excluded.duration_seconds,description=excluded.description,published_at=excluded.published_at,"+
+  "last_checked_at=datetime('now') "+
+  "WHERE optimizer_video_inventory.channel_id=excluded.channel_id")
+  .bind(v.id,channelId,bound(v.title,150),bound(v.privacy,20),v.seconds,String(v.description||'').slice(0,4000),bound(v.published,40)));
+ await env.YTDB.batch(stmts);
+ return {stored:list.length};
+}
+
 export async function getDrafts(env,channelId){
  if(!/^UC[A-Za-z0-9_-]{10,}$/.test(channelId))return [];
  const r=await env.YTDB.prepare('SELECT video_id,original_title,proposed_title,alternate_title,proposed_description,suggested_tags_json,thumbnail_brief,duration_seconds,privacy,status,created_at FROM optimizer_drafts WHERE channel_id=? ORDER BY created_at DESC,video_id DESC LIMIT 35').bind(channelId).all();
