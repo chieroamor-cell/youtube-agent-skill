@@ -691,3 +691,25 @@ test('thumbnail preview is owner-bound and cannot use a different channels video
  assert.match(await r.text(),/No hay propuesta/);
  assert.ok(calls>=3);
 });
+
+
+test('review and apply endpoints reject anonymous attempts without touching channel',async()=>{
+ const env=readyEnv();
+ env.YTDB={prepare(){throw Error('Never read D1 for anonymous reviews');}};
+ for(const endpoint of ['/drafts/approve','/drafts/apply']){
+  const r=await worker.fetch(request(endpoint,{method:'POST',headers:{'content-type':'application/x-www-form-urlencoded'},
+   body:new URLSearchParams({video_id:'abcdefghijk'})}),env);
+  assert.equal(r.status,401,endpoint);
+ }
+});
+test('reviewed private video changes cannot be applied until a separate writer flag is enabled',async()=>{
+ const {env,sessionCookie,csrf,csrfCookie}=await loggedIn();
+ const r=await worker.fetch(request('/drafts/apply',{
+  method:'POST',headers:{'content-type':'application/x-www-form-urlencoded','origin':'null','cookie':sessionCookie+'; '+csrfCookie},
+  body:new URLSearchParams({video_id:'abcdefghijk',confirm_private:'YES',csrf})
+ }),env);
+ assert.equal(r.status,403);
+ const txt=await r.text();
+ assert.match(txt,/escritura en YouTube sigue desactivada/);
+ assert.doesNotMatch(txt,/access_token|client_secret/);
+});
