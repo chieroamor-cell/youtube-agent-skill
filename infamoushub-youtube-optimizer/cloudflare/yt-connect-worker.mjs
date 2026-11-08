@@ -1,5 +1,5 @@
 // InfamousHub YouTube OAuth staging. No video edits, upload, deletion or publication.
-import {discoverNewLongVideos,getDrafts} from './autopilot.mjs';
+import {discoverNewLongVideos,getDrafts,prepareExistingLongVideo} from './autopilot.mjs';
 const REDIRECT='https://infamoushub-youtube-connect.infamoushub-yt-29bea3.workers.dev/oauth/callback';
 const SCOPE='https://www.googleapis.com/auth/youtube.force-ssl';
 const encoder=new TextEncoder();
@@ -166,9 +166,13 @@ async function uploadsDashboard(request,env){
  let result;
  try{result=await listOwnerUploads(env);}catch(e){result={ok:false,kind:'youtube_read_unavailable'};}
  if(!result.ok)return html(nav('<p>No se pudo leer la lista de vídeos ('+escapeHtml(result.kind)+'). No se ha modificado nada.</p>'),503);
- const items=result.long_videos.map(v=>'<li><strong>'+escapeHtml(v.title)+'</strong> ('+
+ const csrf=rnd(32);
+ const items=result.long_videos.map(v=>'<li style="padding:10px 0"><strong>'+escapeHtml(v.title)+'</strong> ('+
   Math.floor(v.seconds/60)+' min '+v.seconds%60+' s, '+escapeHtml(v.privacy)+') '+
-  '<a href="'+v.video_url+'" rel="noopener noreferrer">Abrir vídeo</a></li>').join('');
+  '<a href="'+v.video_url+'" rel="noopener noreferrer">Abrir vídeo</a>'+
+  '<form method="post" action="/drafts/prepare">'+csrfInput(csrf)+
+  '<input type="hidden" name="video_id" value="'+escapeHtml(v.id)+'">'+
+  '<button type="submit">Preparar propuesta SEO (sin modificar YouTube)</button></form></li>').join('');
  return html('<h2>Vídeos largos del canal</h2><p>Cuenta conectada: <code>'+escapeHtml(result.channel_id)+'</code></p>'+
   '<p>Inspeccionados: '+result.checked+' · Vídeos de 4 minutos o más: '+result.long_videos.length+
   ' · Vídeos cortos excluidos: '+result.excluded_short+'</p>'+
@@ -176,9 +180,27 @@ async function uploadsDashboard(request,env){
   (result.has_more?'<p>Hay más vídeos antiguos que aún no se han examinado.</p>':'')+
   '<p>Solo lectura. No se han cambiado títulos, descripciones, miniaturas ni privacidad.</p>'+
   '<p><a href="/channel/videos">Ver mis vídeos largos</a></p>'+
-  '<p><a href="/connect">Volver al panel</a></p>');
+  '<p><a href="/connect">Volver al panel</a></p>',
+  200,{'set-cookie':csrfHeader(csrf)});
 }
 
+async function prepareDraftManually(request,env){
+ if(!ready(env))return html('<p>Conexión no disponible.</p>',503);
+ if(!await adminSession(request,env))return html(nav('<p>Sesión caducada. Vuelve a iniciar sesión.</p>'),401);
+ const input=await form(request);
+ const id=input.get('video_id')||'';
+ if(!/^[A-Za-z0-9_-]{11}$/.test(id))return html(nav('<p>ID de vídeo inválido.</p>'),400);
+ let result;
+ try{result=await prepareExistingLongVideo(env,listOwnerUploads,id);}
+ catch(e){return html(nav('<p>No se pudo generar la propuesta. No se ha modificado YouTube.</p>'),503);}
+ if(result.status!=='draft_created'&&result.status!=='already_exists')
+  return html(nav('<p>La propuesta no se creó ('+escapeHtml(result.status)+'). No se modificó ningún vídeo.</p>'),409);
+ return html('<h2>'+ (result.status==='draft_created'?'Propuesta SEO preparada':'Propuesta SEO ya guardada')+'</h2>'+
+  '<p>Se guardó un borrador para el vídeo '+escapeHtml(result.video_id)+'.</p>'+
+  '<p><a href="/drafts">Ver propuesta de título, etiquetas y miniatura</a></p>'+
+  '<p>Solo borrador: no se han aplicado cambios a YouTube.</p>'+
+  '<p><a href="/channel/videos">Volver a vídeos largos</a></p>');
+}
 
 // Stored draft tags are untrusted text; parse as data and escape before presentation.
 function safeDraftTags(raw){
@@ -454,6 +476,7 @@ export default {
    if(u.pathname==='/channel/verify'&&request.method==='GET')return await channelVerification(request,env);
    if(u.pathname==='/channel/videos'&&request.method==='GET')return await uploadsDashboard(request,env);
    if(u.pathname==='/drafts'&&request.method==='GET')return await draftDashboard(request,env);
+   if(u.pathname==='/drafts/prepare'&&request.method==='POST')return await prepareDraftManually(request,env);
    if(u.pathname==='/watch/status'&&request.method==='GET')return await watchStatus(request,env);
    if(u.pathname==='/watch/scan'&&request.method==='POST')return await manualScan(request,env);
    if(u.pathname==='/session/login'&&request.method==='POST')return await login(request,env);
