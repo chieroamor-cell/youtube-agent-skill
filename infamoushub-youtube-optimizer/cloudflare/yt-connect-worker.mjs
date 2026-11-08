@@ -117,25 +117,49 @@ async function start(request,env){
   '<p><a href="'+escapeHtml(google)+'" rel="noreferrer">Continuar con Google y seleccionar mi canal</a></p><p>No se ha cambiado ningún vídeo.</p>',200,
   {'set-cookie':'ihyt_bind='+bind+'; Secure; HttpOnly; SameSite=Lax; Path=/oauth; Max-Age=600'});
 }
+async function consumeAttempt(db,state,browserBinding,nowUnix){
+ // D1 write statements must use run(): first() is used only for SELECT.
+ // A conditional DELETE with changes=1 makes the Google state strictly one-use.
+ const st=await sha(state), bh=await sha(browserBinding);
+ const row=await db.prepare('SELECT code_verifier FROM oauth_attempts WHERE state_hash=? AND browser_hash=? AND expires_at>=?')
+  .bind(st,bh,nowUnix).first();
+ if(!row?.code_verifier)return null;
+ const removed=await db.prepare('DELETE FROM oauth_attempts WHERE state_hash=? AND browser_hash=? AND expires_at>=?')
+  .bind(st,bh,nowUnix).run();
+ if(removed?.meta?.changes!==1)return null;
+ return row.code_verifier;
+}
+async function activateChannel(db,channel,nowUnix){
+ // Use one conditional update and SELECT, not UPDATE RETURNING .first().
+ const result=await db.prepare("UPDATE oauth_channel SET status='active' WHERE singleton=1 AND status='pending' AND channel_id=? AND created_at>=?")
+  .bind(channel,nowUnix-1800).run();
+ if(result?.meta?.changes!==1)return null;
+ return db.prepare("SELECT channel_id,channel_title FROM oauth_channel WHERE singleton=1 AND status='active' AND channel_id=?")
+  .bind(channel).first();
+}
 async function callback(request,env){
+ let phase='SESSION_CHECK';
+ try{
  if(!ready(env))return html('<p>Google OAuth todavía no está configurado.</p>',503);
  if(!await adminSession(request,env))return html(nav('<p>La sesión de administración ha caducado; no se ha guardado el canal.</p>'),401);
  const params=new URL(request.url).searchParams;
  if(params.get('error'))return html('<p>Google no autorizó la conexión.</p>',403);
  const state=params.get('state'),code=params.get('code'),bind=cookie(request,'ihyt_bind');
  if(!state||state.length>128||!code||code.length>4096||!bind)return html('<p>Sesión incompleta.</p>',400);
- const attempt=await env.YTDB.prepare('DELETE FROM oauth_attempts WHERE state_hash=? AND browser_hash=? AND expires_at>=? RETURNING code_verifier')
-  .bind(await sha(state),await sha(bind),Math.floor(Date.now()/1000)).first();
- if(!attempt?.code_verifier)return html('<p>Esta autorización ha caducado o ya fue usada.</p>',403);
+ phase='GOOGLE_STATE_CHECK';
+ const verifier=await consumeAttempt(env.YTDB,state,bind,Math.floor(Date.now()/1000));
+ if(!verifier)return html(nav('<p>El enlace de Google ha caducado o ya se ha utilizado. Regresa al inicio, entra y genera una autorización nueva. No se ha conectado ningún canal.</p>'),403);
  const payload=new URLSearchParams({
   client_id:env.GOOGLE_OAUTH_CLIENT_ID,client_secret:env.GOOGLE_OAUTH_CLIENT_SECRET,
-  code:code,redirect_uri:REDIRECT,grant_type:'authorization_code',code_verifier:attempt.code_verifier
+  code:code,redirect_uri:REDIRECT,grant_type:'authorization_code',code_verifier:verifier
  });
+ phase='GOOGLE_TOKEN_EXCHANGE';
  const result=await fetch('https://oauth2.googleapis.com/token',{method:'POST',
   headers:{'content-type':'application/x-www-form-urlencoded'},body:payload,redirect:'error'});
  if(!result.ok)return html('<p>Google no completó la autorización. No se guardó ningún canal.</p>',502);
  const token=await result.json();
  if(typeof token.access_token!=='string'||typeof token.refresh_token!=='string')return html('<p>Google no devolvió autorización duradera. Inténtalo de nuevo.</p>',422);
+ phase='YOUTUBE_CHANNEL_CHECK';
  const ch=await fetch('https://www.googleapis.com/youtube/v3/channels?part=id,snippet&mine=true',{
   headers:{authorization:'Bearer '+token.access_token},redirect:'error'});
  if(!ch.ok)return html('<p>YouTube no pudo verificar el canal.</p>',502);
@@ -145,6 +169,7 @@ async function callback(request,env){
  const selected=valid[0];
  const prev=await env.YTDB.prepare('SELECT status FROM oauth_channel WHERE singleton=1').first();
  if(prev?.status==='active')return html('<p>Ya existe un canal autorizado. Se bloqueó el reemplazo.</p>',409);
+ phase='ENCRYPT_AND_STORE';
  const encrypted=await crypt(env,selected.id,token.refresh_token);
  const name=String(selected.snippet?.title||'Canal sin título').slice(0,120);
  await env.YTDB.prepare("INSERT OR REPLACE INTO oauth_channel(singleton,channel_id,channel_title,token_iv,token_ct,status,created_at) VALUES(1,?,?,?,?, 'pending',?)")
@@ -155,14 +180,17 @@ async function callback(request,env){
  const response=html(inside,200,{'set-cookie':csrfHeader(csrf)});
  response.headers.append('set-cookie','ihyt_bind=; Secure; HttpOnly; SameSite=Lax; Path=/oauth; Max-Age=0');
  return response;
+ }catch(e){
+  // No URL query strings, access/refresh tokens, browser cookies or passwords ever exposed.
+  return html(nav('<p>No se pudo completar el retorno de Google (fase '+phase+'). No se ha autorizado ningún canal. Puedes iniciar una autorización nueva desde la página de conexión.</p>'),503);
+ }
 }
 async function confirm(request,env){
  if(!ready(env))return html('<p>Configuración pendiente.</p>',503);
  const f=await form(request);
  if(!await adminSession(request,env))return html(nav('<p>Sesión caducada. Entra de nuevo; no se ha conectado ningún canal.</p>'),401);
  const channel=f.get('channel')||'';
- const r=await env.YTDB.prepare("UPDATE oauth_channel SET status='active' WHERE singleton=1 AND status='pending' AND channel_id=? AND created_at>=? RETURNING channel_id,channel_title")
-  .bind(channel,Math.floor(Date.now()/1000)-1800).first();
+ const r=await activateChannel(env.YTDB,channel,Math.floor(Date.now()/1000));
  if(!r)return html('<p>No coincide el canal o ha caducado la confirmación.</p>',409);
  return html('<p>Conexión confirmada para <strong>'+escapeHtml(r.channel_title)+'</strong> (<code>'+escapeHtml(r.channel_id)+'</code>).</p><p>El agente sigue sin publicar ni modificar vídeos. La prueba real de lectura será el siguiente paso.</p>');
 }
@@ -217,4 +245,4 @@ export default {
   }
  }
 };
-export const TEST={REDIRECT,SCOPE,escapeHtml,ready};
+export const TEST={REDIRECT,SCOPE,escapeHtml,ready,consumeAttempt,activateChannel};
