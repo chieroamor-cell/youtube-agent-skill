@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
-import {prepareDraft,discoverNewLongVideos,getDrafts} from './autopilot.mjs';
+import {prepareDraft,discoverNewLongVideos,getDrafts,prepareExistingLongVideo} from './autopilot.mjs';
 import oauthWorker from './yt-connect-worker.mjs';
 
 const channel='UC'+'a'.repeat(22);
@@ -13,6 +13,9 @@ class MemoryDB {
   const db=this;
   const action=(...args)=>({
    async first(){
+    if(query.startsWith('SELECT channel_id FROM oauth_channel')){
+      return db.authChannel?{channel_id:db.authChannel}:null;
+    }
     if(query.startsWith('SELECT channel_id FROM optimizer_watch_state')){
       return db.watch.has(args[0])?{channel_id:args[0]}:null;
     }
@@ -159,4 +162,42 @@ test('new videos are stored with their drafts in one D1 batch',async()=>{
  assert.equal(env.YTDB.batchCalls,before+1);
  assert.equal(env.YTDB.batchSizes.at(-1),2);
  assert.equal(env.YTDB.drafts.size,1);
+});
+
+
+test('existing long video can be explicitly drafted once after baseline without modifying YouTube',async()=>{
+ const env=testEnv();env.YTDB.authChannel=channel;
+ const oldVideo=vid('abcdefghijk','Football highlights timeline explained',620);
+ await discoverNewLongVideos(env,feed([oldVideo]));
+ assert.equal(env.YTDB.drafts.size,0);
+ const result=await prepareExistingLongVideo(env,feed([oldVideo]),oldVideo.id);
+ assert.equal(result.status,'draft_created');
+ assert.equal(result.created,1);
+ assert.equal(result.youtube_modified,false);
+ assert.equal(result.thumbnail_uploaded,false);
+ const draft=env.YTDB.drafts.get(oldVideo.id);
+ assert.ok(draft);
+ assert.equal(draft.privacy,'private');
+ assert.match(draft.alternate_title,/Football highlights/);
+ const again=await prepareExistingLongVideo(env,feed([oldVideo]),oldVideo.id);
+ assert.equal(again.status,'already_exists');
+ assert.equal(again.created,0);
+ assert.equal(env.YTDB.drafts.size,1);
+});
+test('manual draft rejects Shorts and a different channel without saving data',async()=>{
+ const env=testEnv();env.YTDB.authChannel=channel;
+ const short=vid('abcdefghijk','Shorts story',59);
+ const blocked=await prepareExistingLongVideo(env,feed([short]),short.id);
+ assert.equal(blocked.status,'video_not_eligible_or_not_recent');
+ assert.equal(env.YTDB.drafts.size,0);
+ const mismatch=await prepareExistingLongVideo(env,async()=>({ok:true,channel_id:'UC'+'b'.repeat(22),long_videos:[vid('lmnopqrstuv')]}),'lmnopqrstuv');
+ assert.equal(mismatch.status,'channel_mismatch_or_unavailable');
+ assert.equal(env.YTDB.drafts.size,0);
+});
+test('manual draft does not accept untrusted IDs or unauthenticated channels',async()=>{
+ const env=testEnv();
+ const invalid=await prepareExistingLongVideo(env,async()=>{throw Error('Should not contact YouTube');},'javascript:');
+ assert.equal(invalid.status,'invalid_video_id');
+ const unauthorized=await prepareExistingLongVideo(env,async()=>{throw Error('Should not contact YouTube');},'abcdefghijk');
+ assert.equal(unauthorized.status,'not_authorized');
 });
