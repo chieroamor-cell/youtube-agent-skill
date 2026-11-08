@@ -1,4 +1,5 @@
 // InfamousHub YouTube OAuth staging. No video edits, upload, deletion or publication.
+import {discoverNewLongVideos,getDrafts} from './autopilot.mjs';
 const REDIRECT='https://infamoushub-youtube-connect.infamoushub-yt-29bea3.workers.dev/oauth/callback';
 const SCOPE='https://www.googleapis.com/auth/youtube.force-ssl';
 const encoder=new TextEncoder();
@@ -151,6 +152,7 @@ async function listOwnerUploads(env){
   if(!seconds||['live','upcoming'].includes(item.snippet?.liveBroadcastContent))continue;
   valid.set(item.id,{id:item.id,title:String(item.snippet?.title||'Sin título').slice(0,150),
     seconds,privacy:String(item.status?.privacyStatus||'unknown').slice(0,20),
+    description:String(item.snippet?.description||'').slice(0,4000),
     published:String(item.snippet?.publishedAt||''),video_url:'https://www.youtube.com/watch?v='+item.id});
  }
  const list=ids.map(id=>valid.get(id)).filter(Boolean);
@@ -175,6 +177,62 @@ async function uploadsDashboard(request,env){
   '<p>Solo lectura. No se han cambiado títulos, descripciones, miniaturas ni privacidad.</p>'+
   '<p><a href="/channel/videos">Ver mis vídeos largos</a></p>'+
   '<p><a href="/connect">Volver al panel</a></p>');
+}
+
+
+// Private preview queue: drafts only, never an API write to YouTube.
+async function draftDashboard(request,env){
+ if(!ready(env))return html('<p>Conexión no disponible.</p>',503);
+ if(!await adminSession(request,env))return html(nav('<p>Sesión caducada. Entra con la contraseña para ver las propuestas.</p>'),401);
+ const connected=await env.YTDB.prepare("SELECT channel_id FROM oauth_channel WHERE singleton=1 AND status='active'").first();
+ if(!connected?.channel_id)return html(nav('<p>El canal aún no está autorizado.</p>'),503);
+ let drafts;
+ try{drafts=await getDrafts(env,connected.channel_id);}
+ catch(e){return html(nav('<p>No se pudieron consultar las propuestas guardadas.</p>'),503);}
+ const records=drafts.map(d=>'<article style="border-bottom:1px solid #aaa;padding:14px 0"><h3>'+escapeHtml(d.original_title)+'</h3>'+
+  '<p>Vídeo: <a rel="noopener noreferrer" href="https://www.youtube.com/watch?v='+escapeHtml(d.video_id)+'">'+escapeHtml(d.video_id)+'</a></p>'+
+  '<p><strong>Título propuesto:</strong> '+escapeHtml(d.proposed_title)+'</p>'+
+  '<p><strong>Descripción sugerida:</strong></p><pre style="white-space:pre-wrap;font:inherit;max-height:180px;overflow:auto">'+escapeHtml(d.proposed_description)+'</pre>'+
+  '<p><strong>Miniatura (borrador de diseño, no una imagen generada):</strong> '+escapeHtml(d.thumbnail_brief)+'</p>'+
+  '<p>Estado: '+escapeHtml(d.status)+' · privacidad original: '+escapeHtml(d.privacy)+'</p></article>').join('');
+ return html('<h2>Propuestas SEO automáticas</h2>'+
+   '<p>Estas propuestas se crean cuando el detector ve una nueva subida larga. Ninguna se ha aplicado a YouTube.</p>'+
+   (records||'<p>Aún no hay propuestas. El primer escaneo establece una referencia de los vídeos existentes para no editarlos por error.</p>')+
+   '<p><a href="/watch/status">Estado del detector</a> · <a href="/connect">Volver al panel</a></p>');
+}
+async function watchStatus(request,env){
+ if(!ready(env))return html('<p>No disponible.</p>',503);
+ if(!await adminSession(request,env))return html(nav('<p>Inicia sesión para consultar el detector.</p>'),401);
+ const row=await env.YTDB.prepare("SELECT channel_id FROM oauth_channel WHERE singleton=1 AND status='active'").first();
+ if(!row)return html(nav('<p>Canal sin verificar.</p>'),503);
+ const status=await env.YTDB.prepare('SELECT last_scan_at,initialized_at,scan_count,last_error FROM optimizer_watch_state WHERE channel_id=?').bind(row.channel_id).first();
+ const count=await env.YTDB.prepare('SELECT COUNT(*) AS n FROM optimizer_drafts WHERE channel_id=?').bind(row.channel_id).first();
+ const csrf=rnd(32);
+ return html('<h2>Detector automático de vídeos largos</h2>'+
+  '<p>Programación: '+(env.AUTO_DISCOVERY==='YES'?'activa (cuando Cloudflare ejecute el cron)':'desactivada')+'</p>'+
+  '<p>Primer escaneo completado: '+(status?'sí':'todavía no')+'</p>'+
+  '<p>Última revisión UTC: '+escapeHtml(status?.last_scan_at||'pendiente')+'</p>'+
+  '<p>Revisiones registradas: '+Number(status?.scan_count||0)+
+  ' · Propuestas guardadas: '+Number(count?.n||0)+'</p>'+
+  '<p>Los vídeos existentes se consideran referencia la primera vez; solo los nuevos generan propuestas.</p>'+
+  '<form method="post" action="/watch/scan">'+csrfInput(csrf)+'<button>Comprobar vídeos nuevos ahora (solo lectura)</button></form>'+
+  '<p><a href="/drafts">Ver propuestas</a> · <a href="/connect">Volver al panel</a></p>',
+  200,{'set-cookie':csrfHeader(csrf)});
+}
+async function manualScan(request,env){
+ if(!ready(env))return html('<p>No disponible.</p>',503);
+ await form(request);
+ if(!await adminSession(request,env))return html(nav('<p>Sesión caducada.</p>'),401);
+ let result;
+ try{result=await discoverNewLongVideos(env,listOwnerUploads,{force:true});}
+ catch(e){return html(nav('<p>No se pudo completar la revisión. No se ha cambiado YouTube.</p>'),503);}
+ return html('<h2>Revisión completada</h2>'+
+  '<p>Resultado: '+escapeHtml(result.status)+'</p>'+
+  '<p>Subidas largas revisadas: '+Number(result.checked||0)+
+   ' · Propuestas nuevas: '+Number(result.created||0)+
+   ' · Vídeos existentes marcados como referencia: '+Number(result.baseline_seen||0)+'</p>'+
+  '<p>No se ha cambiado ningún título, miniatura ni vídeo en YouTube.</p>'+
+  '<p><a href="/drafts">Ver propuestas</a> · <a href="/watch/status">Volver al detector</a></p>');
 }
 
 async function channelVerification(request,env){
@@ -342,6 +400,12 @@ async function confirm(request,env){
   '<p>El agente sigue sin publicar ni modificar vídeos.</p><p><a href="/channel/verify">Comprobar conexión con YouTube (solo lectura)</a></p>');
 }
 export default {
+ async scheduled(event,env,ctx){
+  // Cron only discovers videos and stores editorial drafts, NEVER edits or publishes.
+  if(env.AUTO_DISCOVERY!=='YES')return;
+  const work=discoverNewLongVideos(env,listOwnerUploads).catch(()=>({status:'failed_safely'}));
+  if(ctx?.waitUntil)ctx.waitUntil(work);else await work;
+ },
  async fetch(request,env){
   try{
    const u=new URL(request.url);
@@ -367,6 +431,7 @@ export default {
      '<p>Ya puedes consultar vídeos largos del canal. Los Shorts y las publicaciones existentes no se modificarán.</p>'+
      '<p><a href="/channel/verify">Verificar el canal (solo lectura)</a></p>'+
      '<p><a href="/channel/videos">Ver mis vídeos largos (solo lectura)</a></p>'+
+     '<p><a href="/watch/status">Detector automático</a> · <a href="/drafts">Propuestas SEO</a></p>'+
      connectForm+
      '<form method="post" action="/session/logout">'+csrfInput(csrf)+'<button type="submit">Cerrar sesión</button></form>':
      '<p>Primero entra con tu contraseña de administración. Después aparecerá el panel de YouTube.</p>'+
@@ -377,6 +442,9 @@ export default {
    }
    if(u.pathname==='/channel/verify'&&request.method==='GET')return await channelVerification(request,env);
    if(u.pathname==='/channel/videos'&&request.method==='GET')return await uploadsDashboard(request,env);
+   if(u.pathname==='/drafts'&&request.method==='GET')return await draftDashboard(request,env);
+   if(u.pathname==='/watch/status'&&request.method==='GET')return await watchStatus(request,env);
+   if(u.pathname==='/watch/scan'&&request.method==='POST')return await manualScan(request,env);
    if(u.pathname==='/session/login'&&request.method==='POST')return await login(request,env);
    if(u.pathname==='/session/logout'&&request.method==='POST')return await logout(request,env);
    if(u.pathname==='/oauth/start'&&request.method==='POST')return await start(request,env);
