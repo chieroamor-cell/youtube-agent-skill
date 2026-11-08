@@ -53,7 +53,7 @@ class MemoryDB {
     throw Error('Unexpected all '+query);
    }
   });
-  return {bind:(...args)=>action(...args)};
+  return {bind:(...args)=>action(...args),first:()=>action().first()};
  }
  async batch(statements){
   this.batchCalls++;this.batchSizes.push(statements.length);
