@@ -30,6 +30,11 @@ const ready=e=>e.OAUTH_ENABLED==='YES'&&!!e.YTDB&&
 const CSRF_COOKIE='__Host-ihyt_csrf';
 const csrfHeader=value=>CSRF_COOKIE+'='+value+'; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=600';
 const csrfInput=value=>'<input type="hidden" name="csrf" value="'+escapeHtml(value)+'">';
+const ADMIN_COOKIE='__Host-ihyt_admin';
+const adminCookie=value=>ADMIN_COOKIE+'='+value+'; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=1200';
+const adminClear=()=>ADMIN_COOKIE+'=; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=0';
+const redirect=(location,cookieHeader)=>new Response(null,{status:303,headers:{...headers,location,'set-cookie':cookieHeader}});
+const nav=(s)=>'<p><a href="/connect">Volver al inicio</a></p>'+s;
 const form=async r=>{
  const origin=r.headers.get('origin');
  if(origin&&origin!=='null'&&origin!==new URL(REDIRECT).origin)throw Error('Invalid origin');
@@ -48,6 +53,30 @@ const cookie=(r,name)=>{
  }
  return '';
 };
+async function adminSession(request,env){
+ const token=cookie(request,ADMIN_COOKIE);
+ if(!/^[A-Za-z0-9_-]{35,110}$/.test(token))return false;
+ const row=await env.YTDB.prepare('SELECT expires_at FROM oauth_admin_sessions WHERE session_hash=? AND expires_at>=?')
+ .bind(await sha(token),Math.floor(Date.now()/1000)).first();
+ return !!row;
+}
+async function login(request,env){
+ if(!ready(env))return html('<p>La autorización aún no está configurada.</p>',503);
+ const input=await form(request);
+ if(!await eq(input.get('code'),env.OAUTH_ADMIN_CODE))return html(nav('<p>Contraseña incorrecta. Vuelve a intentar entrar.</p>'),403);
+ const session=rnd(48),expires=Math.floor(Date.now()/1000)+1200;
+ await env.YTDB.prepare('INSERT INTO oauth_admin_sessions(session_hash,expires_at) VALUES (?,?)')
+  .bind(await sha(session),expires).run();
+ return redirect('/connect',adminCookie(session));
+}
+async function logout(request,env){
+ if(!ready(env))return html('<p>Configuración no disponible.</p>',503);
+ await form(request);
+ const token=cookie(request,ADMIN_COOKIE);
+ if(/^[A-Za-z0-9_-]{35,110}$/.test(token))
+  await env.YTDB.prepare('DELETE FROM oauth_admin_sessions WHERE session_hash=?').bind(await sha(token)).run();
+ return redirect('/connect',adminClear());
+}
 const crypt=async(e,channel,token)=>{
  const raw=Uint8Array.from(atob(e.OAUTH_TOKEN_KEY_B64),x=>x.charCodeAt(0));
  if(raw.length!==32)throw Error('Invalid encryption key');
@@ -58,8 +87,8 @@ const crypt=async(e,channel,token)=>{
 };
 async function start(request,env){
  if(!ready(env))return html('<p>Faltan credenciales de Google. No hay conexión activa.</p>',503);
- const body=await form(request);
- if(!await eq(body.get('code'),env.OAUTH_ADMIN_CODE))return html('<p>Código incorrecto.</p>',403);
+ await form(request);
+ if(!await adminSession(request,env))return html(nav('<p>Tu sesión ha caducado. Entra con la contraseña otra vez.</p>'),401);
  const existing=await env.YTDB.prepare('SELECT status FROM oauth_channel WHERE singleton=1').first();
  if(existing?.status==='active')return html('<p>Ya existe un canal activo. No se sustituyó.</p>',409);
  const state=rnd(32),bind=rnd(32),verifier=rnd(48);
@@ -71,11 +100,14 @@ async function start(request,env){
   access_type:'offline',prompt:'consent select_account',state:state,
   code_challenge:await sha(verifier),code_challenge_method:'S256'
  });
- return new Response(null,{status:303,headers:{...headers,'location':'https://accounts.google.com/o/oauth2/v2/auth?'+q.toString(),
-  'set-cookie':'ihyt_bind='+bind+'; Secure; HttpOnly; SameSite=Lax; Path=/oauth; Max-Age=600'}});
+ const google='https://accounts.google.com/o/oauth2/v2/auth?'+q.toString();
+ return html('<h2>Sesión iniciada</h2><p>Ahora pulsa el siguiente enlace para continuar con Google. Si tu navegador integrado bloquea Google, abre esta página en Chrome y repite el proceso.</p>'+
+  '<p><a href="'+escapeHtml(google)+'" rel="noreferrer">Continuar con Google y seleccionar mi canal</a></p><p>No se ha cambiado ningún vídeo.</p>',200,
+  {'set-cookie':'ihyt_bind='+bind+'; Secure; HttpOnly; SameSite=Lax; Path=/oauth; Max-Age=600'});
 }
 async function callback(request,env){
  if(!ready(env))return html('<p>Google OAuth todavía no está configurado.</p>',503);
+ if(!await adminSession(request,env))return html(nav('<p>La sesión de administración ha caducado; no se ha guardado el canal.</p>'),401);
  const params=new URL(request.url).searchParams;
  if(params.get('error'))return html('<p>Google no autorizó la conexión.</p>',403);
  const state=params.get('state'),code=params.get('code'),bind=cookie(request,'ihyt_bind');
@@ -107,7 +139,7 @@ async function callback(request,env){
   .bind(selected.id,name,encrypted.iv,encrypted.ct,Math.floor(Date.now()/1000)).run();
  const csrf=rnd(32);
  const inside='<p>Google identificó este canal. <strong>Comprueba que es el mismo donde publicas los Shorts.</strong></p><p><strong>'+escapeHtml(name)+'</strong><br><code>'+escapeHtml(selected.id)+'</code></p><p>Por ahora ningún vídeo ha cambiado.</p>'+
- '<form action="/oauth/confirm" method="post">'+csrfInput(csrf)+'<input type="hidden" name="channel" value="'+escapeHtml(selected.id)+'"><label>Código de administración</label><input type="password" name="code" minlength="24" required autocomplete="off"><button>Confirmar este canal</button></form>';
+ '<form action="/oauth/confirm" method="post">'+csrfInput(csrf)+'<input type="hidden" name="channel" value="'+escapeHtml(selected.id)+'"><button type="submit">Sí, conectar este canal</button></form>';
  const response=html(inside,200,{'set-cookie':csrfHeader(csrf)});
  response.headers.append('set-cookie','ihyt_bind=; Secure; HttpOnly; SameSite=Lax; Path=/oauth; Max-Age=0');
  return response;
@@ -115,7 +147,7 @@ async function callback(request,env){
 async function confirm(request,env){
  if(!ready(env))return html('<p>Configuración pendiente.</p>',503);
  const f=await form(request);
- if(!await eq(f.get('code'),env.OAUTH_ADMIN_CODE))return html('<p>Código incorrecto. No se vinculó el canal.</p>',403);
+ if(!await adminSession(request,env))return html(nav('<p>Sesión caducada. Entra de nuevo; no se ha conectado ningún canal.</p>'),401);
  const channel=f.get('channel')||'';
  const r=await env.YTDB.prepare("UPDATE oauth_channel SET status='active' WHERE singleton=1 AND status='pending' AND channel_id=? AND created_at>=? RETURNING channel_id,channel_title")
   .bind(channel,Math.floor(Date.now()/1000)-1800).first();
@@ -129,12 +161,21 @@ export default {
    if(u.origin!==new URL(REDIRECT).origin)return json({error:'wrong_origin'},421);
    if(u.pathname==='/health'&&request.method==='GET')return json({service:'infamoushub-youtube-connect',oauth_configured:!!ready(env),edits_enabled:false,uploads_enabled:false,publication_enabled:false});
    if((u.pathname==='/'||u.pathname==='/connect')&&request.method==='GET'){
-    if(!ready(env))return html('<p>El conector está preparado en modo seguro. Falta configurar y autorizar Google OAuth.</p><p>URI de retorno en Google Cloud:<br><code>'+escapeHtml(REDIRECT)+'</code></p>');
+    if(!ready(env))return html('<p>La conexión está preparada, pero faltan las credenciales o su activación en Cloudflare.</p><p>URI de retorno:<br><code>'+escapeHtml(REDIRECT)+'</code></p>',503);
     const csrf=rnd(32);
-    return html('<p>Autoriza exactamente el canal donde tienes los Shorts. Google pedirá un permiso amplio para gestionar YouTube, aunque este conector solo verifica el canal.</p>'+
-     '<form action="/oauth/start" method="post">'+csrfInput(csrf)+'<label>Código de administración</label><input type="password" name="code" minlength="24" required autocomplete="off"><button>Conectar con Google</button></form>',200,
-     {'set-cookie':csrfHeader(csrf)});
+    const logged=await adminSession(request,env);
+    const content=logged?
+     '<h2>Sesión iniciada</h2><p>Ahora puedes conectar el mismo canal donde ya publicas Shorts. Google te mostrará sus permisos.</p>'+
+     '<form method="post" action="/oauth/start">'+csrfInput(csrf)+'<button type="submit">2. Conectar mi YouTube</button></form>'+
+     '<form method="post" action="/session/logout">'+csrfInput(csrf)+'<button type="submit">Cerrar sesión</button></form>':
+     '<p>Primero entra con tu contraseña de administración. Después aparecerá el botón para conectar YouTube.</p>'+
+     '<form method="post" action="/session/login">'+csrfInput(csrf)+'<label for="admin-code">Contraseña de administración</label>'+
+     '<input id="admin-code" name="code" type="password" required minlength="24" autocomplete="current-password" placeholder="Tu contraseña segura">'+
+     '<button type="submit">1. Entrar</button></form>';
+    return html(content,200,{'set-cookie':csrfHeader(csrf)});
    }
+   if(u.pathname==='/session/login'&&request.method==='POST')return await login(request,env);
+   if(u.pathname==='/session/logout'&&request.method==='POST')return await logout(request,env);
    if(u.pathname==='/oauth/start'&&request.method==='POST')return await start(request,env);
    if(u.pathname==='/oauth/callback'&&request.method==='GET')return await callback(request,env);
    if(u.pathname==='/oauth/confirm'&&request.method==='POST')return await confirm(request,env);
