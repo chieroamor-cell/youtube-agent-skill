@@ -107,6 +107,76 @@ async function verifyChannelReadOnly(env){
   video_count:Number(channel.statistics?.videoCount)||0
  },write_enabled:false,privacy_changes_enabled:false};
 }
+
+// Only the signed-in administrator can inspect recent uploads. This route never writes to YouTube.
+function safeDuration(raw){
+ const match=/^P(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?)?$/.exec(String(raw||''));
+ if(!match||!match.slice(1).some(v=>v!==undefined))return 0;
+ const [d,h,m,s]=match.slice(1).map(v=>Number(v||0));
+ const total=d*86400+h*3600+m*60+s;
+ return Number.isSafeInteger(total)&&total>=0?total:0;
+}
+async function listOwnerUploads(env){
+ const saved=await env.YTDB.prepare("SELECT channel_id,token_iv,token_ct FROM oauth_channel WHERE singleton=1 AND status='active'").first();
+ if(!saved||!/^UC[A-Za-z0-9_-]{10,}$/.test(saved.channel_id))return {ok:false,kind:'channel_not_connected'};
+ const refresh=await decryptStoredRefresh(env,saved);
+ const tokenRes=await fetch('https://oauth2.googleapis.com/token',{
+  method:'POST',headers:{'content-type':'application/x-www-form-urlencoded'},
+  body:new URLSearchParams({client_id:env.GOOGLE_OAUTH_CLIENT_ID,client_secret:env.GOOGLE_OAUTH_CLIENT_SECRET,refresh_token:refresh,grant_type:'refresh_token'}),
+  redirect:'manual'
+ });
+ if(tokenRes.status>=300&&tokenRes.status<400)return {ok:false,kind:'unexpected_token_redirect'};
+ if(!tokenRes.ok)return {ok:false,kind:'google_token_rejected'};
+ const access=(await tokenRes.json()).access_token;
+ if(typeof access!=='string'||!access)return {ok:false,kind:'missing_access_token'};
+ const get=async (url)=>{
+  const r=await fetch(url,{method:'GET',headers:{authorization:'Bearer '+access},redirect:'manual'});
+  if(r.status>=300&&r.status<400)throw Error('redirect_blocked');
+  if(!r.ok)throw Error('youtube_api_failed');
+  return await r.json();
+ };
+ const channel=await get('https://www.googleapis.com/youtube/v3/channels?part=id%2CcontentDetails&mine=true');
+ const own=(Array.isArray(channel.items)?channel.items:[]).find(c=>c.id===saved.channel_id);
+ const uploads=own?.contentDetails?.relatedPlaylists?.uploads;
+ if(!uploads||typeof uploads!=='string')return {ok:false,kind:'owner_playlist_not_found'};
+ const playlist=await get('https://www.googleapis.com/youtube/v3/playlistItems?part=contentDetails&maxResults=50&playlistId='+encodeURIComponent(uploads));
+ const ids=[...new Set((Array.isArray(playlist.items)?playlist.items:[])
+  .map(i=>i?.contentDetails?.videoId).filter(id=>typeof id==='string'&&/^[A-Za-z0-9_-]{11}$/.test(id)))];
+ if(!ids.length)return {ok:true,channel_id:saved.channel_id,checked:0,long_videos:[],excluded_short:0,total_seen:0,read_only:true};
+ const details=await get('https://www.googleapis.com/youtube/v3/videos?part=id%2Csnippet%2CcontentDetails%2Cstatus&id='+encodeURIComponent(ids.join(',')));
+ const valid=new Map();
+ for(const item of Array.isArray(details.items)?details.items:[]){
+  if(item.snippet?.channelId!==saved.channel_id||!ids.includes(item.id))continue;
+  const seconds=safeDuration(item.contentDetails?.duration);
+  if(!seconds||['live','upcoming'].includes(item.snippet?.liveBroadcastContent))continue;
+  valid.set(item.id,{id:item.id,title:String(item.snippet?.title||'Sin título').slice(0,150),
+    seconds,privacy:String(item.status?.privacyStatus||'unknown').slice(0,20),
+    published:String(item.snippet?.publishedAt||''),video_url:'https://www.youtube.com/watch?v='+item.id});
+ }
+ const list=ids.map(id=>valid.get(id)).filter(Boolean);
+ const long=list.filter(v=>v.seconds>=240);
+ return {ok:true,channel_id:saved.channel_id,checked:list.length,long_videos:long.slice(0,50),
+  excluded_short:list.length-long.length,total_seen:ids.length,has_more:!!playlist.nextPageToken,read_only:true};
+}
+async function uploadsDashboard(request,env){
+ if(!ready(env))return html('<p>El conector no está disponible.</p>',503);
+ if(!await adminSession(request,env))return html(nav('<p>Sesión caducada. Entra de nuevo con tu contraseña de administración.</p>'),401);
+ let result;
+ try{result=await listOwnerUploads(env);}catch(e){result={ok:false,kind:'youtube_read_unavailable'};}
+ if(!result.ok)return html(nav('<p>No se pudo leer la lista de vídeos ('+escapeHtml(result.kind)+'). No se ha modificado nada.</p>'),503);
+ const items=result.long_videos.map(v=>'<li><strong>'+escapeHtml(v.title)+'</strong> ('+
+  Math.floor(v.seconds/60)+' min '+v.seconds%60+' s, '+escapeHtml(v.privacy)+') '+
+  '<a href="'+v.video_url+'" rel="noopener noreferrer">Abrir vídeo</a></li>').join('');
+ return html('<h2>Vídeos largos del canal</h2><p>Cuenta conectada: <code>'+escapeHtml(result.channel_id)+'</code></p>'+
+  '<p>Inspeccionados: '+result.checked+' · Vídeos de 4 minutos o más: '+result.long_videos.length+
+  ' · Vídeos cortos excluidos: '+result.excluded_short+'</p>'+
+  '<ul>'+(items||'<li>No se encontraron vídeos largos entre las subidas recientes.</li>')+'</ul>'+
+  (result.has_more?'<p>Hay más vídeos antiguos que aún no se han examinado.</p>':'')+
+  '<p>Solo lectura. No se han cambiado títulos, descripciones, miniaturas ni privacidad.</p>'+
+  '<p><a href="/channel/videos">Ver mis vídeos largos</a></p>'+
+  '<p><a href="/connect">Volver al panel</a></p>');
+}
+
 async function channelVerification(request,env){
  if(!ready(env))return html('<p>Conexión no disponible.</p>',503);
  if(!await adminSession(request,env))return html(nav('<p>Sesión caducada. Vuelve a entrar con tu contraseña de administración.</p>'),401);
@@ -284,6 +354,7 @@ export default {
     const content=logged?
      '<h2>Sesión iniciada</h2><p>Consulta el canal que autorizaste. No se modificarán vídeos.</p>'+
      '<p><a href="/channel/verify">Verificar el canal (solo lectura)</a></p>'+
+     '<p><a href="/channel/videos">Ver mis vídeos largos (solo lectura)</a></p>'+
      '<form method="post" action="/oauth/start">'+csrfInput(csrf)+'<button type="submit">2. Conectar mi YouTube</button></form>'+
      '<form method="post" action="/session/logout">'+csrfInput(csrf)+'<button type="submit">Cerrar sesión</button></form>':
      '<p>Primero entra con tu contraseña de administración. Después aparecerá el botón para conectar YouTube.</p>'+
@@ -293,6 +364,7 @@ export default {
     return html(content,200,{'set-cookie':csrfHeader(csrf)});
    }
    if(u.pathname==='/channel/verify'&&request.method==='GET')return await channelVerification(request,env);
+   if(u.pathname==='/channel/videos'&&request.method==='GET')return await uploadsDashboard(request,env);
    if(u.pathname==='/session/login'&&request.method==='POST')return await login(request,env);
    if(u.pathname==='/session/logout'&&request.method==='POST')return await logout(request,env);
    if(u.pathname==='/oauth/start'&&request.method==='POST')return await start(request,env);
@@ -316,4 +388,4 @@ export default {
   }
  }
 };
-export const TEST={REDIRECT,SCOPE,escapeHtml,ready,consumeAttempt,activateChannel,verifyChannelReadOnly};
+export const TEST={REDIRECT,SCOPE,escapeHtml,ready,consumeAttempt,activateChannel,verifyChannelReadOnly,listOwnerUploads,safeDuration};
