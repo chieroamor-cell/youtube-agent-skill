@@ -1,40 +1,37 @@
-# Same YouTube channel — secure new Cloudflare OAuth connection
+# InfamousHub · YouTube — conexión del mismo canal (2026-11-08)
 
-Status: **staging, OAuth DISABLED, no real YouTube connection yet**.
-The existing Shorts bot in the former Cloudflare account is not inspected, modified, or migrated.
+**Estado:** Nuevo conector de Cloudflare funcionando, pero todavía sin un canal de YouTube autorizado. No está permitido editar, publicar ni eliminar vídeos.
 
-## What is already prepared (new Cloudflare account only)
+## Configuración realizada
 
-- New Cloudflare account Workers subdomain: `infamoushub-yt-29bea3.workers.dev`
-- Worker: `infamoushub-youtube-connect`
-- Staging landing page: `https://infamoushub-youtube-connect.infamoushub-yt-29bea3.workers.dev/connect`
-- Google OAuth **authorized redirect URI** (copy EXACTLY, without a trailing slash):
-  `https://infamoushub-youtube-connect.infamoushub-yt-29bea3.workers.dev/oauth/callback`
-- Dedicated D1 database: `infamoushub-youtube-oauth` (EU storage)
-- 256-bit AES-GCM key stored as a Cloudflare **secret**, not in GitHub.
-- `OAUTH_ENABLED=NO`; no jobs, edits, publishing or connection tokens yet.
+- Conector independiente: `https://infamoushub-youtube-connect.infamoushub-yt-29bea3.workers.dev/connect`
+- Google OAuth Web Client creado y secretos presentes en el nuevo Cloudflare: `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, `OAUTH_ADMIN_CODE`.
+- Cliente OAuth activo para iniciar la autorización: `OAUTH_ENABLED=YES`.
+- Datos de canal y sesiones en D1 europea `infamoushub-youtube-oauth`. El token de actualización de Google se cifra mediante AES-GCM con clave privada separada.
+- Los 11 comandos originales de YouTube Agent Skill, el bot de Shorts y la cuenta antigua de Cloudflare permanecen intactos.
 
-## One-time Google account authorization (owner must complete)
+## Instrucciones — dos pasos en Chrome
 
-1. Open [Google Cloud Console](https://console.cloud.google.com/). Choose a Google Cloud project you control. The existing Shorts project may be reused if you own it, but create a **separate OAuth web client**; do not alter its old client, old secret or callback URI.
-2. Enable **YouTube Data API v3**, if it is not enabled in that project. Stop if Google asks to activate paid billing.
-3. In **Google Auth Platform → Branding / Audience / Clients**, complete the OAuth consent screen if needed, add the Google account that manages the channel as a test user when the app is in Testing, then create an **OAuth Client ID of type Web application**.
-4. Add exactly the authorized redirect URI above. Save. The new OAuth client ID and client secret remain private.
-5. Open the **new** Cloudflare account only → Workers & Pages → `infamoushub-youtube-connect` → Settings → Variables and Secrets. Add three **Secret** entries, never plaintext variables:
-   - `GOOGLE_OAUTH_CLIENT_ID` = OAuth client ID from Google
-   - `GOOGLE_OAUTH_CLIENT_SECRET` = OAuth client secret from Google
-   - `OAUTH_ADMIN_CODE` = a newly generated random password of at least 24 characters, saved in a password manager
-   The separate secret `OAUTH_TOKEN_KEY_B64` is already stored: **do not overwrite or remove it**, or previously stored tokens would become undecipherable.
-6. **Do not send OAuth secrets, API keys, passwords or the admin code in ChatGPT, screenshots or GitHub.** After these secrets are set, the operator may check bindings and switch `OAUTH_ENABLED` from `NO` to `YES`, while keeping all editing and scheduled work disabled.
-7. Open the staging landing page using the normal Chrome browser (not an embedded/in-app login browser). Enter the admin code; Google will ask you to select and authorize a Google/Brand channel identity. Confirm that the displayed channel title and **UC...** channel ID match the channel already publishing Shorts. Only then confirm the binding.
-8. The connector encrypts the refresh token and marks the channel active, but **does not edit/upload/publish any video**. Perform read-only and private-video trials before enabling any metadata write.
+1. Abrir la URL del conector en **Chrome normal**, no en el navegador integrado de otra aplicación. Si se abre dentro de ChatGPT, utilizar el menú ⋮ del navegador para elegir *Abrir en Chrome*.
+2. Introducir una sola vez la contraseña de administración (24+ caracteres). Pulsar **1. Entrar**. Si es correcta, el navegador recibe una cookie de sesión `Secure`, `HttpOnly` y `SameSite=Lax` válida durante **20 minutos**. En D1 se guarda únicamente el hash de un token aleatorio de sesión; no se guarda la contraseña.
+3. Se muestra una pantalla separada **Sesión iniciada**, con **2. Conectar mi YouTube** y **Cerrar sesión**.
+4. Pulsar **2. Conectar mi YouTube**. Para evitar redirecciones automáticas bloqueadas en el móvil, aparece un enlace visible **Continuar con Google y seleccionar mi canal**. Abrirlo en la **misma ventana de Chrome** para conservar cookies y autorización de 10 minutos.
+5. En Google, elegir la cuenta que administra el mismo canal donde publica los Shorts. Conocer el correo no basta: verificar el nombre y el ID de canal real (prefijo `UC`) en la pantalla de confirmación.
+6. Tras regresar desde Google, confirmar el canal explícitamente. No es necesario volver a introducir la contraseña mientras la sesión de 20 minutos siga activa.
+7. Realizar primero una lectura del canal y después una prueba sobre un vídeo **privado**. Las modificaciones de títulos, descripciones y miniaturas siguen deshabilitadas.
 
-## Important limitations
+## Límites y seguridad
 
-- The requested `https://www.googleapis.com/auth/youtube.force-ssl` OAuth scope has broad YouTube permissions, including delete; the Worker deliberately contains no delete/update/upload endpoints. Review the Google permission screen before granting it.
-- Google's **External / Testing** authorization and refresh token can expire after 7 days for YouTube scopes. Long-term unattended access requires an appropriate OAuth app publishing status and potentially Google verification. Production verification generally needs a verified owned domain, not simply a shared workers.dev hostname.
-- The Google user who owns the channel must approve OAuth in their own browser; no tool can do this consent for them.
-- This does not yet give the Python optimizer a private cloud runner or automatic screenshots/thumbnail generation. Publishing and metadata writes stay disabled until end-to-end testing and authorization.
-- This separate Worker and EU D1 database were created without selecting a paid plan. Verify future usage and provider quotas.
+- Un error de contraseña nunca debe mostrar secretos ni redirigir a Google; el formulario utiliza doble comprobación CSRF y límites de tamaño.
+- El permiso solicitado, `youtube.force-ssl`, es amplio: la aplicación no tiene endpoints para modificar, eliminar ni publicar vídeos, pero Google mostrará las capacidades de ese permiso. Revisar cuidadosamente antes de consentir.
+- `OAUTH_ADMIN_CODE`, `GOOGLE_OAUTH_CLIENT_SECRET`, claves y tokens se mantienen solo en Cloudflare Secrets; **no compartirlos por capturas, chat o GitHub**.
+- Las autorizaciones externas en modo *Testing* pueden caducar a los 7 días. Antes de automatizar será necesario revisar el estado de la pantalla de consentimiento y el posible proceso de verificación de Google.
+- La autorización de Google no es todavía una automatización periódica del optimizador; falta desarrollar un agente de ejecución privada para títulos y miniaturas.
 
-Primary docs: https://developers.google.com/youtube/v3/guides/authentication ; https://developers.google.com/identity/protocols/oauth2/web-server ; https://support.google.com/cloud/answer/15549945
+## Autorización de retorno de Google (ya configurada en su cliente OAuth)
+
+`https://infamoushub-youtube-connect.infamoushub-yt-29bea3.workers.dev/oauth/callback`
+
+**No modificar las credenciales OAuth del bot antiguo.**
+
+Documentación: <https://developers.google.com/identity/protocols/oauth2/web-server> y <https://developers.google.com/youtube/v3/guides/authentication>
