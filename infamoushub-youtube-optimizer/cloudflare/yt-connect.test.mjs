@@ -26,8 +26,8 @@ test('health has no sensitive information or edit feature',async()=>{
 test('setup page is safe without Google credentials',async()=>{
  const response=await worker.fetch(request('/connect'),{OAUTH_ENABLED:'NO'});
  const body=await response.text();
- assert.equal(response.status,200);
- assert.match(body,/Falta configurar y autorizar Google OAuth/);
+ assert.equal(response.status,503);
+ assert.match(body,/faltan las credenciales o su activación en Cloudflare/);
  assert.ok(!body.includes('client_secret'));
 });
 test('OAuth start blocked until configured',async()=>{
@@ -116,24 +116,22 @@ class InMemoryDB {
  constructor(){this.sessions=new Map();this.oauthAttempts=0;this.channels=[];}
  prepare(sql){
   const db=this;
-  return {
-   bind(...args){
-    return {
-     async first(){
-      if(sql.includes('FROM oauth_admin_sessions'))return db.sessions.has(args[0])&&db.sessions.get(args[0])>=args[1]?{expires_at:db.sessions.get(args[0])}:null;
-      if(sql.includes('FROM oauth_channel'))return null;
-      throw Error('Unexpected SQL first: '+sql);
-     },
-     async run(){
-      if(sql.includes('INSERT INTO oauth_admin_sessions'))db.sessions.set(args[0],args[1]);
-      else if(sql.includes('INSERT INTO oauth_attempts'))db.oauthAttempts++;
-      else if(sql.includes('DELETE FROM oauth_admin_sessions'))db.sessions.delete(args[0]);
-      else throw Error('Unexpected SQL run: '+sql);
-      return {success:true};
-     }
-    };
+  const bound=(...args)=>({
+   async first(){
+    if(sql.includes('FROM oauth_admin_sessions'))
+      return db.sessions.has(args[0])&&db.sessions.get(args[0])>=args[1]?{expires_at:db.sessions.get(args[0])}:null;
+    if(sql.includes('FROM oauth_channel'))return null;
+    throw Error('Unexpected SQL first: '+sql);
+   },
+   async run(){
+    if(sql.includes('INSERT INTO oauth_admin_sessions'))db.sessions.set(args[0],args[1]);
+    else if(sql.includes('INSERT INTO oauth_attempts'))db.oauthAttempts++;
+    else if(sql.includes('DELETE FROM oauth_admin_sessions'))db.sessions.delete(args[0]);
+    else throw Error('Unexpected SQL run: '+sql);
+    return {success:true};
    }
-  };
+  });
+  return {bind(...args){return bound(...args);},first:async()=>bound().first()};
  }
 }
 async function loggedIn(){
