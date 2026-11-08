@@ -356,6 +356,7 @@ test('simulated Google callback stores encrypted token pending and confirms only
  const savedFetch=globalThis.fetch;
  globalThis.fetch=async(url,opts)=>{
   networkCalls++;
+  assert.equal(opts?.redirect,'manual','Cloudflare Workers does not support redirect:error');
   if(String(url)==='https://oauth2.googleapis.com/token')
    return new Response(JSON.stringify({access_token:'mock-access-token',refresh_token:'mock-refresh-token'}),{status:200,headers:{'content-type':'application/json'}});
   if(String(url).startsWith('https://www.googleapis.com/youtube/v3/channels?'))
@@ -392,4 +393,60 @@ test('simulated Google callback stores encrypted token pending and confirms only
   }),env);
   assert.equal(again.status,409,'A second confirmation must fail');
  }finally{globalThis.fetch=savedFetch;}
+});
+
+
+test('Google OAuth token endpoint never follows HTTP redirects with sensitive credentials',async()=>{
+ const env=readyEnv();
+ let used=0,redirectRequest=false;
+ env.YTDB={
+  prepare(sql){
+   if(sql.startsWith('SELECT expires_at FROM oauth_admin_sessions'))return {bind(){return {first:async()=>({expires_at:Math.floor(Date.now()/1000)+500})}}};
+   if(sql.startsWith('SELECT code_verifier FROM oauth_attempts'))return {bind(){return {first:async()=>({code_verifier:'mock-code-verifier'})}}};
+   if(sql.startsWith('DELETE FROM oauth_attempts'))return {bind(){return {run:async()=>({meta:{changes:1}})}}};
+   throw Error('Unexpected SQL: '+sql);
+  }
+ };
+ const original=globalThis.fetch;
+ globalThis.fetch=async(url,opts)=>{
+   used++;
+   assert.equal(String(url),'https://oauth2.googleapis.com/token');
+   assert.equal(opts.redirect,'manual');
+   redirectRequest=true;
+   return new Response(null,{status:302,headers:{location:'https://unexpected.example/steal-credentials'}});
+ };
+ try{
+  const r=await worker.fetch(request('/oauth/callback?state=mock-state&code=mock-auth-code',{
+   headers:{cookie:'__Host-ihyt_admin='+'a'.repeat(50)+'; ihyt_bind='+'b'.repeat(50)}
+  }),env);
+  assert.equal(r.status,502);
+  assert.match(await r.text(),/redirección inesperada/);
+  assert.equal(used,1,'Should not fetch a redirect target');
+  assert.equal(redirectRequest,true);
+ }finally{globalThis.fetch=original;}
+});
+test('An invalid Google authorization response gives a recoverable 502, not an internal exception',async()=>{
+ const env=readyEnv();
+ env.YTDB={
+  prepare(sql){
+   if(sql.startsWith('SELECT expires_at FROM oauth_admin_sessions'))return {bind(){return {first:async()=>({expires_at:Math.floor(Date.now()/1000)+500})}}};
+   if(sql.startsWith('SELECT code_verifier FROM oauth_attempts'))return {bind(){return {first:async()=>({code_verifier:'mock-code-verifier'})}}};
+   if(sql.startsWith('DELETE FROM oauth_attempts'))return {bind(){return {run:async()=>({meta:{changes:1}})}}};
+   throw Error('Unexpected SQL: '+sql);
+  }
+ };
+ const original=globalThis.fetch;
+ globalThis.fetch=async(url,opts)=>{
+  assert.equal(opts.redirect,'manual');
+  return new Response(JSON.stringify({error:'invalid_grant'}),{status:400,headers:{'content-type':'application/json'}});
+ };
+ try{
+  const r=await worker.fetch(request('/oauth/callback?state=mock-state&code=mock-auth-code',{
+   headers:{cookie:'__Host-ihyt_admin='+'a'.repeat(50)+'; ihyt_bind='+'b'.repeat(50)}
+  }),env);
+  assert.equal(r.status,502);
+  const body=await r.text();
+  assert.match(body,/Google rechazó el intercambio/);
+  assert.doesNotMatch(body,/mock-auth-code|mock-code-verifier|invalid_grant/);
+ }finally{globalThis.fetch=original;}
 });
