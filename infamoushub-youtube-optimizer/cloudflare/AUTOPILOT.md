@@ -33,3 +33,21 @@ The OAuth credential remains encrypted in the new Cloudflare account; do not mov
 `node --test cloudflare/autopilot.test.mjs` validates baseline/no duplicates, title accuracy/credits, Shorts exclusion and atomic batch behavior; `node --test cloudflare/yt-connect.test.mjs` validates OAuth and owner authentication, plus the private video list. CI also executes the existing Python tests. The exact last passing run is in the repository GitHub Actions history.
 
 Use the panel to inspect the first live scan. A scheduled trigger existing in Cloudflare is not proof that it has run successfully; check `last_scan_at` and YouTube API read results before calling live discovery verified.
+
+## Update: manual first draft and alternative SEO title
+
+The first automatic scheduled scan on **2026-11-08 21:15:46 UTC** succeeded for the connected `infamoushub` channel:
+- `optimizer_watch_state.scan_count=1`, `last_error=NULL`.
+- 1 existing long video marked as seen (baseline only); **0 drafts** created, as expected.
+- New automatic scans run hourly at minute 15 UTC, using only YouTube read APIs.
+
+To test immediately without waiting for another upload:
+1. Open the protected panel, enter the existing administrator password.
+2. Select **Ver mis vídeos largos** and click **Preparar propuesta SEO (sin modificar YouTube)** beside the video.
+3. The app validates ownership and 4-minute minimum duration again before saving a draft; duplicate clicks cannot create duplicate drafts.
+4. Open **Propuestas SEO** to review the original title, alternative title, suggested tags, current credited description and a *thumbnail design brief*.
+5. Nothing from this page is applied to YouTube. A real JPG/PNG thumbnail and a tested authorized write workflow are still missing.
+
+**Do not mistake the design brief for an actual miniature**, or a suggested title for confirmed SEO growth. The contents are derived from the existing title and description, not a video transcript. Work on genuine content analysis and quality checks before approving an automatic metadata writer.
+
+The account remains on the 0 CHF objective. No paid image generation, video hosting or subscriptions have been activated. Keep old Shorts deployments completely separate.
