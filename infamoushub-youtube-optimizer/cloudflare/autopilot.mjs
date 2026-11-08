@@ -35,10 +35,20 @@ export function prepareDraft(video, channelId){
 export async function discoverNewLongVideos(env,readUploads,options={}){
  if(env.AUTO_DISCOVERY!=='YES'&&!options.force) return {status:'disabled',created:0};
  if(!env.YTDB)return {status:'missing_database',created:0};
+ const recordError=async code=>{
+  try{await env.YTDB.prepare("UPDATE optimizer_watch_state SET last_error=?,last_scan_at=datetime('now') WHERE channel_id=(SELECT channel_id FROM oauth_channel WHERE singleton=1 AND status='active')").bind(code).run();}
+  catch(e){/* Never leak tokens or error messages to a public endpoint. */}
+ };
  let feed;
- try{feed=await readUploads(env)}catch(e){return {status:'youtube_read_failed',created:0}};
- if(!feed?.ok||!/^UC[A-Za-z0-9_-]{10,}$/.test(feed.channel_id||''))
-  return {status:feed?.kind||'invalid_channel',created:0};
+ try{feed=await readUploads(env)}catch(e){
+  await recordError('youtube_read_failed');
+  return {status:'youtube_read_failed',created:0};
+ }
+ if(!feed?.ok||!/^UC[A-Za-z0-9_-]{10,}$/.test(feed.channel_id||'')){
+  const code=['google_token_rejected','youtube_api_failed','youtube_read_unavailable','channel_mismatch','invalid_channel'].includes(feed?.kind)?feed.kind:'invalid_channel';
+  await recordError(code);
+  return {status:code,created:0};
+ }
  const channel=feed.channel_id,videos=Array.isArray(feed.long_videos)?feed.long_videos.slice(0,50):[];
  const initial=await env.YTDB.prepare('SELECT channel_id FROM optimizer_watch_state WHERE channel_id=?').bind(channel).first();
  const baseline=!initial;
