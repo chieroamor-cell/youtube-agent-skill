@@ -154,14 +154,19 @@ async function callback(request,env){
   code:code,redirect_uri:REDIRECT,grant_type:'authorization_code',code_verifier:verifier
  });
  phase='GOOGLE_TOKEN_EXCHANGE';
+ // Cloudflare Workers does not support redirect:'error'; a Request throws a TypeError.
+ // 'manual' prevents a 3xx from forwarding OAuth credentials to any redirected endpoint.
  const result=await fetch('https://oauth2.googleapis.com/token',{method:'POST',
-  headers:{'content-type':'application/x-www-form-urlencoded'},body:payload,redirect:'error'});
- if(!result.ok)return html('<p>Google no completó la autorización. No se guardó ningún canal.</p>',502);
+  headers:{'content-type':'application/x-www-form-urlencoded'},body:payload,redirect:'manual'});
+ if(result.status>=300&&result.status<400)return html('<p>Google devolvió una redirección inesperada durante la autorización. Se bloqueó para proteger tus credenciales.</p>',502);
+ if(!result.ok)return html('<p>Google rechazó el intercambio de autorización. No se ha guardado ningún canal. Comprueba el cliente OAuth y sus permisos.</p>',502);
  const token=await result.json();
  if(typeof token.access_token!=='string'||typeof token.refresh_token!=='string')return html('<p>Google no devolvió autorización duradera. Inténtalo de nuevo.</p>',422);
  phase='YOUTUBE_CHANNEL_CHECK';
+ // Redirect responses are rejected: a bearer token must never follow a redirect.
  const ch=await fetch('https://www.googleapis.com/youtube/v3/channels?part=id,snippet&mine=true',{
-  headers:{authorization:'Bearer '+token.access_token},redirect:'error'});
+  headers:{authorization:'Bearer '+token.access_token},redirect:'manual'});
+ if(ch.status>=300&&ch.status<400)return html('<p>YouTube devolvió una redirección inesperada. Se bloqueó para proteger la autorización.</p>',502);
  if(!ch.ok)return html('<p>YouTube no pudo verificar el canal.</p>',502);
  const channels=(await ch.json()).items||[];
  const valid=channels.filter(x=>/^UC[A-Za-z0-9_-]{10,}$/.test(x.id||''));
