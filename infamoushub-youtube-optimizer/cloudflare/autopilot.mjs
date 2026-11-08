@@ -79,10 +79,10 @@ export async function discoverNewLongVideos(env,readUploads,options={}){
    // Atomic pair: if a draft cannot be saved, its video ID is not marked seen.
    stmts.push(env.YTDB.prepare("INSERT OR IGNORE INTO optimizer_seen_videos(video_id,channel_id,first_seen_at) VALUES (?,?,datetime('now'))").bind(video.id,channel));
    stmts.push(env.YTDB.prepare(
-    "INSERT OR IGNORE INTO optimizer_drafts(video_id,channel_id,original_title,proposed_title,proposed_description,suggested_tags_json,thumbnail_brief,duration_seconds,privacy,video_published_at,status) VALUES (?,?,?,?,?,?,?,?,?,?,'needs_review')")
+    "INSERT OR IGNORE INTO optimizer_drafts(video_id,channel_id,original_title,proposed_title,proposed_description,suggested_tags_json,thumbnail_brief,duration_seconds,privacy,video_published_at,status,alternate_title) VALUES (?,?,?,?,?,?,?,?,?,?,'needs_review',?)")
     .bind(draft.video_id,draft.channel_id,draft.original_title,draft.proposed_title,
      draft.proposed_description,draft.suggested_tags_json,draft.thumbnail_brief,
-     draft.duration_seconds,draft.privacy,draft.video_published_at));
+     draft.duration_seconds,draft.privacy,draft.video_published_at,draft.alternate_title));
   }
   if(stmts.length){
    const result=await env.YTDB.batch(stmts);
@@ -97,6 +97,6 @@ export async function discoverNewLongVideos(env,readUploads,options={}){
 }
 export async function getDrafts(env,channelId){
  if(!/^UC[A-Za-z0-9_-]{10,}$/.test(channelId))return [];
- const r=await env.YTDB.prepare('SELECT video_id,original_title,proposed_title,proposed_description,suggested_tags_json,thumbnail_brief,duration_seconds,privacy,status,created_at FROM optimizer_drafts WHERE channel_id=? ORDER BY created_at DESC,video_id DESC LIMIT 35').bind(channelId).all();
+ const r=await env.YTDB.prepare('SELECT video_id,original_title,proposed_title,alternate_title,proposed_description,suggested_tags_json,thumbnail_brief,duration_seconds,privacy,status,created_at FROM optimizer_drafts WHERE channel_id=? ORDER BY created_at DESC,video_id DESC LIMIT 35').bind(channelId).all();
  return r.results||[];
 }
