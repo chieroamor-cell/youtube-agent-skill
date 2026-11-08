@@ -51,6 +51,7 @@ export async function guardedPrivateUpdate({env,videoId,expectedChannel,draft,ac
   return {status:'invalid_reference',changed:false,thumbnail_uploaded:false};
  if(typeof accessToken!=='string'||accessToken.length<8)
   return {status:'missing_token',changed:false,thumbnail_uploaded:false};
+ let metadataChanged=false;
  const auth={authorization:'Bearer '+accessToken};
  const get=async url=>{
   const r=await fetchFn(url,{method:'GET',headers:auth,redirect:'manual'});
@@ -81,6 +82,7 @@ export async function guardedPrivateUpdate({env,videoId,expectedChannel,draft,ac
    body:JSON.stringify(candidate),redirect:'manual'
   });
   if(!updated.ok||updated.status>=300)return {status:'metadata_rejected',changed:false,thumbnail_uploaded:false};
+  metadataChanged=true;
   const saved=await updated.json();
   if(saved.id!==videoId)return {status:'metadata_unconfirmed',changed:true,thumbnail_uploaded:false};
   const uploaded=await fetchFn('https://www.googleapis.com/upload/youtube/v3/thumbnails/set?videoId='+videoId+'&uploadType=media',{
@@ -90,5 +92,5 @@ export async function guardedPrivateUpdate({env,videoId,expectedChannel,draft,ac
   if(!uploaded.ok||uploaded.status>=300)return {status:'metadata_updated_thumbnail_failed',changed:true,thumbnail_uploaded:false};
   return {status:'completed_private_test',video_id:videoId,changed:true,thumbnail_uploaded:true,
    privacy_untouched:true};
- }catch(e){return {status:'api_error',changed:false,thumbnail_uploaded:false};}
+ }catch(e){return {status:'api_error',changed:metadataChanged,thumbnail_uploaded:false};}
 }
