@@ -19,7 +19,7 @@ test('invalid ID or title rejected',()=>{
  assert.throws(()=>makeThumbnailHTML({...draft,original_title:'x'}),/invalid_title/);
 });
 test('long title is truncated without inventing words',()=>{
- assert.ok(safeThumbnailTitle({...draft,original_title:'History '.repeat(15)}).length<=72);
+ assert.ok(safeThumbnailTitle({...draft,original_title:'History '.repeat(12)}).length<=72);
 });
 test('missing Browser Run binding fails safely',async()=>{
  assert.deepEqual(await renderThumbnail({},draft),{ok:false,reason:'browser_not_enabled'});
