@@ -713,3 +713,35 @@ test('reviewed private video changes cannot be applied until a separate writer f
  assert.match(txt,/escritura en YouTube sigue desactivada/);
  assert.doesNotMatch(txt,/access_token|client_secret/);
 });
+
+
+test('signed-in thumbnail endpoint streams a real JPEG only from an owner draft',async()=>{
+ const env=readyEnv(),owner='UC'+'q'.repeat(22),id='abcdefghijk';
+ const fakeJpeg=new Uint8Array(7200);fakeJpeg[0]=255;fakeJpeg[1]=216;
+ env.YTDB={prepare(sql){
+  if(sql.startsWith('SELECT expires_at FROM oauth_admin_sessions'))
+   return {bind(){return {first:async()=>({expires_at:Math.floor(Date.now()/1000)+300})}}};
+  if(sql.startsWith('SELECT channel_id FROM oauth_channel'))
+   return {first:async()=>({channel_id:owner})};
+  if(sql.startsWith('SELECT video_id,channel_id,original_title,thumbnail_brief,status FROM optimizer_drafts'))
+   return {bind(vid,ch){assert.equal(vid,id);assert.equal(ch,owner);return {first:async()=>({video_id:id,channel_id:owner,original_title:'A Real Story About Games',status:'needs_review'})}}};
+  throw Error('Unrecognized SQL '+sql);
+ }};
+ let screenshots=0;
+ env.BROWSER={quickAction:async(name,o)=>{
+  screenshots++;assert.equal(name,'screenshot');assert.equal(o.viewport.width,1280);assert.equal(o.viewport.height,720);
+  return new Response(fakeJpeg,{headers:{'content-type':'image/jpeg'}});
+ }};
+ const orig=globalThis.fetch;
+ globalThis.fetch=async()=>{throw Error('YouTube write API should not be called');};
+ try{
+  const r=await worker.fetch(request('/drafts/thumbnail?video_id=abcdefghijk',{
+   headers:{cookie:'__Host-ihyt_admin='+'a'.repeat(50)}
+  }),env);
+  assert.equal(r.status,200,await r.clone().text().catch(()=>''));assert.equal(screenshots,1);
+  assert.equal(r.headers.get('content-type'),'image/jpeg');
+  assert.match(r.headers.get('content-disposition')||'',/infamoushub-abcdefghijk\.jpg/);
+  assert.equal(r.headers.get('cache-control'),'no-store');
+  const b=new Uint8Array(await r.arrayBuffer());assert.equal(b.length,7200);assert.equal(b[0],255);assert.equal(b[1],216);
+ }finally{globalThis.fetch=orig;}
+});
