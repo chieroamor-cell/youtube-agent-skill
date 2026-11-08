@@ -231,3 +231,91 @@ test('storage health test never exposes session data or channel identifiers',asy
  assert.deepEqual(data,{available:true,kind:'session_lookup_only'});
  assert.ok(!JSON.stringify(data).includes('channel_id'));
 });
+
+
+test('OAuth state is consumed once using SELECT plus conditional DELETE.run, never write .first',async()=>{
+ let saved=true, selectCalls=0, deleteCalls=0;
+ const db={
+  prepare(sql){
+   if(sql.startsWith('SELECT code_verifier FROM oauth_attempts'))return {
+    bind(){return {first:async()=>{selectCalls++;return saved?{code_verifier:'mock-pkce-verifier'}:null;}}}
+   };
+   if(sql.startsWith('DELETE FROM oauth_attempts'))return {
+    bind(){return {run:async()=>{deleteCalls++;if(!saved)return {meta:{changes:0}};saved=false;return {meta:{changes:1}};}}}
+   };
+   throw Error('Unexpected query or unsafe non-SELECT .first(): '+sql);
+  }
+ };
+ const one=await TEST.consumeAttempt(db,'mock-state','mock-browser-cookie',Math.floor(Date.now()/1000));
+ const two=await TEST.consumeAttempt(db,'mock-state','mock-browser-cookie',Math.floor(Date.now()/1000));
+ assert.equal(one,'mock-pkce-verifier');
+ assert.equal(two,null);
+ assert.equal(selectCalls,2);
+ assert.equal(deleteCalls,1);
+});
+test('OAuth state fails closed if concurrent use already deleted it',async()=>{
+ const db={
+  prepare(sql){
+   if(sql.startsWith('SELECT code_verifier'))return {bind(){return {first:async()=>({code_verifier:'mock-pkce-verifier'})}}};
+   if(sql.startsWith('DELETE FROM oauth_attempts'))return {bind(){return {run:async()=>({meta:{changes:0}})}}};
+   throw Error('Unexpected query '+sql);
+  }
+ };
+ assert.equal(await TEST.consumeAttempt(db,'mock-state','mock-cookie',Math.floor(Date.now()/1000)),null);
+});
+test('channel activation requires a conditional single UPDATE.run then a SELECT',async()=>{
+ let active=false,updates=0;
+ const db={
+  prepare(sql){
+   if(sql.startsWith('UPDATE oauth_channel'))return {bind(){return {run:async()=>{
+    updates++;if(active)return {meta:{changes:0}};
+    active=true;return {meta:{changes:1}};
+   }}}};
+   if(sql.startsWith('SELECT channel_id,channel_title FROM oauth_channel'))return {bind(id){return {first:async()=>active?{channel_id:id,channel_title:'Owner channel'}:null}}};
+   throw Error('Unexpected query '+sql);
+  }
+ };
+ const now=Math.floor(Date.now()/1000);
+ const first=await TEST.activateChannel(db,'UC1234567890',now);
+ assert.deepEqual(first,{channel_id:'UC1234567890',channel_title:'Owner channel'});
+ assert.equal(await TEST.activateChannel(db,'UC1234567890',now),null);
+ assert.equal(updates,2);
+});
+test('expired Google state shows a recoverable message without network or video edits',async()=>{
+ const env=readyEnv();
+ let anyWrite=false;
+ env.YTDB={
+  prepare(sql){
+   if(sql.startsWith('SELECT expires_at FROM oauth_admin_sessions'))return {bind(){return {first:async()=>({expires_at:Math.floor(Date.now()/1000)+500})}}};
+   if(sql.startsWith('SELECT code_verifier FROM oauth_attempts'))return {bind(){return {first:async()=>null}}};
+   anyWrite=true;
+   throw Error('Unexpected state modification');
+  }
+ };
+ const admin='__Host-ihyt_admin='+'a'.repeat(50),bind='ihyt_bind='+'b'.repeat(50);
+ const r=await worker.fetch(request('/oauth/callback?state=mock-state&code=mock-google-code',{
+  headers:{cookie:admin+'; '+bind}
+ }),env);
+ assert.equal(r.status,403);
+ const page=await r.text();
+ assert.match(page,/caducado o ya se ha utilizado/);
+ assert.match(page,/Volver al inicio/);
+ assert.equal(anyWrite,false);
+});
+test('callback database exception reveals only phase identifier and no OAuth secret',async()=>{
+ const env=readyEnv();
+ env.YTDB={
+  prepare(sql){
+   if(sql.startsWith('SELECT expires_at FROM oauth_admin_sessions'))return {bind(){return {first:async()=>({expires_at:Math.floor(Date.now()/1000)+300})}}};
+   if(sql.startsWith('SELECT code_verifier FROM oauth_attempts'))return {bind(){return {first:async()=>{throw Error('Sensitive SQL details would never be sent to visitor');}}}};
+   throw Error('Unexpected DB operation');
+  }
+ };
+ const r=await worker.fetch(request('/oauth/callback?state=dummy-state&code=top-secret-oauth-code',{
+  headers:{cookie:'__Host-ihyt_admin='+'a'.repeat(50)+'; ihyt_bind='+'b'.repeat(50)}
+ }),env);
+ assert.equal(r.status,503);
+ const body=await r.text();
+ assert.match(body,/GOOGLE_STATE_CHECK/);
+ assert.doesNotMatch(body,/top-secret-oauth-code|Sensitive SQL details|refresh_token/);
+});
