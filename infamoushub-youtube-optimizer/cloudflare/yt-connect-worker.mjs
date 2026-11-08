@@ -239,6 +239,7 @@ async function draftDashboard(request,env){
  let drafts;
  try{drafts=await getDrafts(env,connected.channel_id);}
  catch(e){return html(nav('<p>No se pudieron consultar las propuestas guardadas.</p>'),503);}
+ const csrf=rnd(32);
  const records=drafts.map(d=>'<article style="border-bottom:1px solid #aaa;padding:14px 0"><h3>'+escapeHtml(d.original_title)+'</h3>'+
   '<p>Vídeo: <a rel="noopener noreferrer" href="https://www.youtube.com/watch?v='+escapeHtml(d.video_id)+'">'+escapeHtml(d.video_id)+'</a></p>'+
   '<p><strong>Título seguro:</strong> '+escapeHtml(d.proposed_title)+'</p>'+
@@ -248,11 +249,49 @@ async function draftDashboard(request,env){
   '<p><strong>Miniatura de prueba (JPEG real, 1280×720):</strong> <a href="/drafts/thumbnail?video_id='+escapeHtml(d.video_id)+'">Ver y descargar miniatura</a></p>'+
   '<p>Diseño original de InfamousHub basado solo en el título verificado. No se han analizado fotogramas; revisa la imagen antes de subirla.</p>'+
   '<p><strong>Instrucciones de diseño:</strong> '+escapeHtml(d.thumbnail_brief)+'</p>'+
-  '<p>Estado: '+escapeHtml(d.status)+' · privacidad original: '+escapeHtml(d.privacy)+'</p></article>').join('');
+  '<p>Estado: '+escapeHtml(d.status)+' · privacidad original: '+escapeHtml(d.privacy)+'</p>'+
+  (d.privacy==='private'&&d.status==='needs_review'?
+   '<form method="post" action="/drafts/approve">'+csrfInput(csrf)+
+   '<input type="hidden" name="video_id" value="'+escapeHtml(d.video_id)+'">'+
+   '<p><label><input type="radio" name="title_choice" value="original" checked> Conservar título original</label></p>'+
+   '<p><label><input type="radio" name="title_choice" value="alternate"> Usar título alternativo después de revisión</label></p>'+
+   '<label><input name="reviewed" type="checkbox" required> Confirmo que revisé el contenido, las etiquetas y los derechos de la miniatura.</label>'+
+   '<p><button type="submit">Aprobar borrador para prueba privada</button></p></form>':'')+'</article>').join('');
  return html('<h2>Propuestas SEO automáticas</h2>'+
    '<p>Estas propuestas se crean cuando el detector ve una nueva subida larga. Ninguna se ha aplicado a YouTube.</p>'+
    (records||'<p>Aún no hay propuestas. El primer escaneo establece una referencia de los vídeos existentes para no editarlos por error.</p>')+
-   '<p><a href="/watch/status">Estado del detector</a> · <a href="/connect">Volver al panel</a></p>');
+   '<p><a href="/watch/status">Estado del detector</a> · <a href="/connect">Volver al panel</a></p>',
+   200,{'set-cookie':csrfHeader(csrf)});
+}
+async function approveDraft(request,env){
+ if(!ready(env))return html('<p>Conexión no disponible.</p>',503);
+ if(!await adminSession(request,env))return html(nav('<p>Sesión caducada. Entra antes de aprobar cualquier cambio.</p>'),401);
+ const formData=await form(request);
+ const videoId=formData.get('video_id')||'';
+ const selection=formData.get('title_choice')||'';
+ if(!/^[A-Za-z0-9_-]{11}$/.test(videoId)||!['original','alternate'].includes(selection)||formData.get('reviewed')!=='on')
+  return html(nav('<p>Faltan datos de aprobación o confirmación editorial.</p>'),400);
+ const owner=await env.YTDB.prepare("SELECT channel_id FROM oauth_channel WHERE singleton=1 AND status='active'").first();
+ if(!owner?.channel_id)return html(nav('<p>Canal sin autorizar.</p>'),503);
+ const draft=await env.YTDB.prepare('SELECT video_id,original_title,alternate_title,privacy,status FROM optimizer_drafts WHERE video_id=? AND channel_id=?')
+  .bind(videoId,owner.channel_id).first();
+ if(!draft||draft.status!=='needs_review'||draft.privacy!=='private')
+  return html(nav('<p>Solo pueden aprobarse propuestas pendientes de vídeos privados.</p>'),409);
+ if(selection==='alternate'&&(!(draft.alternate_title||'').trim()||(draft.alternate_title||'').length>100))
+  return html(nav('<p>El título alternativo no es válido.</p>'),400);
+ let response;
+ try{response=await listOwnerUploads(env);}catch(e){return html(nav('<p>La comprobación de YouTube falló. No se aprobó el borrador.</p>'),503);}
+ const actual=response.ok&&response.channel_id===owner.channel_id&&
+  response.long_videos.find(v=>v.id===videoId&&v.privacy==='private'&&v.title===draft.original_title);
+ if(!actual)return html(nav('<p>El vídeo ya no coincide con la propuesta o no es privado. Revisión requerida.</p>'),409);
+ const result=await env.YTDB.prepare(
+  "UPDATE optimizer_drafts SET status='approved',selected_title=?,approved_at=datetime('now'),updated_at=datetime('now') WHERE video_id=? AND channel_id=? AND status='needs_review'")
+  .bind(selection,videoId,owner.channel_id).run();
+ if(result?.meta?.changes!==1)return html(nav('<p>La propuesta ya había sido revisada. No se realizó ninguna modificación.</p>'),409);
+ return html('<h2>Borrador aprobado para prueba</h2><p>Vídeo: '+escapeHtml(videoId)+
+  ' · Título elegido: '+escapeHtml(selection)+'</p>'+
+  '<p><strong>Ningún cambio se ha aplicado a YouTube.</strong> La escritura sigue bloqueada hasta probarla con un vídeo privado.</p>'+
+  '<p><a href="/drafts">Volver a propuestas SEO</a></p>');
 }
 async function watchStatus(request,env){
  if(!ready(env))return html('<p>No disponible.</p>',503);
@@ -500,6 +539,7 @@ export default {
    if(u.pathname==='/channel/videos'&&request.method==='GET')return await uploadsDashboard(request,env);
    if(u.pathname==='/drafts'&&request.method==='GET')return await draftDashboard(request,env);
    if(u.pathname==='/drafts/thumbnail'&&request.method==='GET')return await thumbnailPreview(request,env);
+   if(u.pathname==='/drafts/approve'&&request.method==='POST')return await approveDraft(request,env);
    if(u.pathname==='/drafts/prepare'&&request.method==='POST')return await prepareDraftManually(request,env);
    if(u.pathname==='/watch/status'&&request.method==='GET')return await watchStatus(request,env);
    if(u.pathname==='/watch/scan'&&request.method==='POST')return await manualScan(request,env);
