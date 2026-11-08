@@ -1,5 +1,6 @@
 // InfamousHub YouTube OAuth staging. No video edits, upload, deletion or publication.
 import {discoverNewLongVideos,getDrafts,prepareExistingLongVideo} from './autopilot.mjs';
+import {renderThumbnail} from './thumbnail.mjs';
 const REDIRECT='https://infamoushub-youtube-connect.infamoushub-yt-29bea3.workers.dev/oauth/callback';
 const SCOPE='https://www.googleapis.com/auth/youtube.force-ssl';
 const encoder=new TextEncoder();
@@ -202,6 +203,26 @@ async function prepareDraftManually(request,env){
   '<p><a href="/channel/videos">Volver a vídeos largos</a></p>');
 }
 
+// Thumbnail: original 1280x720 JPEG preview, viewable only by this channel administrator.
+async function thumbnailPreview(request,env){
+ if(!ready(env))return html('<p>Conexión no disponible.</p>',503);
+ if(!await adminSession(request,env))return html(nav('<p>Sesión caducada. Entra para descargar miniaturas.</p>'),401);
+ const id=new URL(request.url).searchParams.get('video_id')||'';
+ if(!/^[A-Za-z0-9_-]{11}$/.test(id))return html(nav('<p>ID del vídeo inválido.</p>'),400);
+ const owner=await env.YTDB.prepare("SELECT channel_id FROM oauth_channel WHERE singleton=1 AND status='active'").first();
+ if(!owner?.channel_id)return html(nav('<p>Canal sin conectar.</p>'),503);
+ const draft=await env.YTDB.prepare('SELECT video_id,channel_id,original_title,thumbnail_brief,status FROM optimizer_drafts WHERE video_id=? AND channel_id=?')
+  .bind(id,owner.channel_id).first();
+ if(!draft)return html(nav('<p>No hay propuesta aprobable para este vídeo. Prepara primero una propuesta SEO.</p>'),404);
+ const result=await renderThumbnail(env,draft);
+ if(!result.ok)return html(nav('<p>No se pudo crear la imagen ('+escapeHtml(result.reason)+'). No se modificó YouTube.</p>'),503);
+ return new Response(result.bytes,{status:200,headers:{
+  ...headers,'content-type':result.contentType,'content-length':String(result.size),
+  'content-disposition':'inline; filename="'+result.downloadName+'"',
+  'x-robots-tag':'noindex, nofollow'
+ }});
+}
+
 // Stored draft tags are untrusted text; parse as data and escape before presentation.
 function safeDraftTags(raw){
  try{
@@ -224,7 +245,9 @@ async function draftDashboard(request,env){
   '<p><strong>Título alternativo para revisar:</strong> '+escapeHtml(d.alternate_title||'No disponible')+'</p>'+
   '<p><strong>Etiquetas sugeridas:</strong> '+escapeHtml(safeDraftTags(d.suggested_tags_json))+'</p>'+
   '<p><strong>Descripción sugerida:</strong></p><pre style="white-space:pre-wrap;font:inherit;max-height:180px;overflow:auto">'+escapeHtml(d.proposed_description)+'</pre>'+
-  '<p><strong>Miniatura (borrador de diseño, no una imagen generada):</strong> '+escapeHtml(d.thumbnail_brief)+'</p>'+
+  '<p><strong>Miniatura de prueba (JPEG real, 1280×720):</strong> <a href="/drafts/thumbnail?video_id='+escapeHtml(d.video_id)+'">Ver y descargar miniatura</a></p>'+
+  '<p>Diseño original de InfamousHub basado solo en el título verificado. No se han analizado fotogramas; revisa la imagen antes de subirla.</p>'+
+  '<p><strong>Instrucciones de diseño:</strong> '+escapeHtml(d.thumbnail_brief)+'</p>'+
   '<p>Estado: '+escapeHtml(d.status)+' · privacidad original: '+escapeHtml(d.privacy)+'</p></article>').join('');
  return html('<h2>Propuestas SEO automáticas</h2>'+
    '<p>Estas propuestas se crean cuando el detector ve una nueva subida larga. Ninguna se ha aplicado a YouTube.</p>'+
@@ -476,6 +499,7 @@ export default {
    if(u.pathname==='/channel/verify'&&request.method==='GET')return await channelVerification(request,env);
    if(u.pathname==='/channel/videos'&&request.method==='GET')return await uploadsDashboard(request,env);
    if(u.pathname==='/drafts'&&request.method==='GET')return await draftDashboard(request,env);
+   if(u.pathname==='/drafts/thumbnail'&&request.method==='GET')return await thumbnailPreview(request,env);
    if(u.pathname==='/drafts/prepare'&&request.method==='POST')return await prepareDraftManually(request,env);
    if(u.pathname==='/watch/status'&&request.method==='GET')return await watchStatus(request,env);
    if(u.pathname==='/watch/scan'&&request.method==='POST')return await manualScan(request,env);
