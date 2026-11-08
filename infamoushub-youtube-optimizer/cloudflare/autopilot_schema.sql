@@ -14,3 +14,9 @@ CREATE TABLE IF NOT EXISTS optimizer_drafts (
  created_at TEXT NOT NULL DEFAULT (datetime('now')),updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS optimizer_drafts_order ON optimizer_drafts(channel_id,created_at);
+CREATE TABLE IF NOT EXISTS optimizer_video_inventory (
+ video_id TEXT PRIMARY KEY, channel_id TEXT NOT NULL, title TEXT NOT NULL,
+ privacy TEXT NOT NULL, duration_seconds INTEGER NOT NULL, description TEXT NOT NULL,
+ published_at TEXT, last_checked_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS optimizer_video_inventory_channel ON optimizer_video_inventory(channel_id,privacy);
