@@ -31,3 +31,6 @@ jobs:
       - name: Test automatic discovery, safe baseline and offline SEO drafts
         working-directory: infamoushub-youtube-optimizer
         run: node --test cloudflare/autopilot.test.mjs
+      - name: Test private rendered thumbnail output and image security
+        working-directory: infamoushub-youtube-optimizer
+        run: node --test cloudflare/thumbnail.test.mjs
