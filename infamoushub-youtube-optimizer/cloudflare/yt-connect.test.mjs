@@ -86,16 +86,16 @@ test('embedded browser null Origin with valid CSRF produces a clear wrong-code e
  const env=readyEnv();
  const {code,cookie}=await extractCsrf(env);
  const body=new URLSearchParams({code:'definitely-incorrect-admin-code',csrf:code});
- const r=await worker.fetch(request('/oauth/start',{
+ const r=await worker.fetch(request('/session/login',{
   method:'POST',headers:{'content-type':'application/x-www-form-urlencoded','cookie':cookie,'origin':'null'},body
  }),env);
  assert.equal(r.status,403);
- assert.match(await r.text(),/C[oó]digo incorrecto/);
+ assert.match(await r.text(),/Contraseña incorrecta/);
 });
 test('missing or mismatched CSRF fails before verifying owner password',async()=>{
  const env=readyEnv();
  const {code,cookie}=await extractCsrf(env);
- const r=await worker.fetch(request('/oauth/start',{
+ const r=await worker.fetch(request('/session/login',{
   method:'POST',headers:{'content-type':'application/x-www-form-urlencoded','cookie':cookie,'origin':'null'},
   body:new URLSearchParams({csrf:'not-the-issued-token',code:env.OAUTH_ADMIN_CODE})
  }),env);
@@ -104,36 +104,115 @@ test('missing or mismatched CSRF fails before verifying owner password',async()=
 });
 test('explicit foreign site fails even with valid CSRF token',async()=>{
  const env=readyEnv(), {code,cookie}=await extractCsrf(env);
- const r=await worker.fetch(request('/oauth/start',{
+ const r=await worker.fetch(request('/session/login',{
   method:'POST',headers:{'content-type':'application/x-www-form-urlencoded','cookie':cookie,'origin':'https://evil.example','sec-fetch-site':'cross-site'},
   body:new URLSearchParams({csrf:code,code:env.OAUTH_ADMIN_CODE})
  }),env);
  assert.equal(r.status,403);
  assert.equal((await r.json()).error,'form_origin_rejected');
 });
-test('successful owner approval creates one-time Google redirect without changing videos',async()=>{
- const env=readyEnv();
- let inserts=0;
- env.YTDB={
-  prepare(sql){return {
-   first:async()=>null,
-   bind(...args){return {
-    run:async()=>{inserts++;return {success:true};}
-   }}
-  }}
- };
- const {code,cookie}=await extractCsrf(env);
- const r=await worker.fetch(request('/oauth/start',{
-  method:'POST',headers:{'content-type':'application/x-www-form-urlencoded','cookie':cookie,'origin':'null'},
-  body:new URLSearchParams({csrf:code,code:env.OAUTH_ADMIN_CODE})
+
+class InMemoryDB {
+ constructor(){this.sessions=new Map();this.oauthAttempts=0;this.channels=[];}
+ prepare(sql){
+  const db=this;
+  return {
+   bind(...args){
+    return {
+     async first(){
+      if(sql.includes('FROM oauth_admin_sessions'))return db.sessions.has(args[0])&&db.sessions.get(args[0])>=args[1]?{expires_at:db.sessions.get(args[0])}:null;
+      if(sql.includes('FROM oauth_channel'))return null;
+      throw Error('Unexpected SQL first: '+sql);
+     },
+     async run(){
+      if(sql.includes('INSERT INTO oauth_admin_sessions'))db.sessions.set(args[0],args[1]);
+      else if(sql.includes('INSERT INTO oauth_attempts'))db.oauthAttempts++;
+      else if(sql.includes('DELETE FROM oauth_admin_sessions'))db.sessions.delete(args[0]);
+      else throw Error('Unexpected SQL run: '+sql);
+      return {success:true};
+     }
+    };
+   }
+  };
+ }
+}
+async function loggedIn(){
+ const env=readyEnv(),db=new InMemoryDB();
+ env.YTDB=db;
+ const loginForm=await extractCsrf(env);
+ const r=await worker.fetch(request('/session/login',{
+  method:'POST',headers:{'content-type':'application/x-www-form-urlencoded',
+   'cookie':loginForm.cookie,'origin':'null'},
+  body:new URLSearchParams({csrf:loginForm.code,code:env.OAUTH_ADMIN_CODE})
  }),env);
  assert.equal(r.status,303);
- const url=r.headers.get('location')||'';
- assert.ok(url.startsWith('https://accounts.google.com/o/oauth2/v2/auth?'));
- const parts=new URL(url);
- assert.equal(parts.searchParams.get('redirect_uri'),TEST.REDIRECT);
- assert.equal(parts.searchParams.get('scope'),TEST.SCOPE);
- assert.equal(parts.searchParams.get('code_challenge_method'),'S256');
- assert.equal(inserts,1);
+ assert.equal(r.headers.get('location'),'/connect');
+ const sessionCookie=(r.headers.get('set-cookie')||'').split(';')[0];
+ assert.match(sessionCookie,/__Host-ihyt_admin=/);
+ const dashboard=await worker.fetch(request('/connect',{headers:{cookie:sessionCookie}}),env);
+ assert.equal(dashboard.status,200);
+ const page=await dashboard.text();
+ assert.match(page,/Sesión iniciada/);
+ assert.match(page,/2. Conectar mi YouTube/);
+ const csrf=page.match(/name="csrf" value="([^"]+)"/)?.[1];
+ const csrfCookie=(dashboard.headers.get('set-cookie')||'').split(';')[0];
+ assert.ok(csrf?.length>30);
+ return {env,db,sessionCookie,csrf,csrfCookie};
+}
+test('password sign-in and separate YouTube connection screen',async()=>{
+ const {sessionCookie,env}=await loggedIn();
+ const page=await (await worker.fetch(request('/connect',{headers:{cookie:sessionCookie}}),env)).text();
+ assert.match(page,/Conectar mi YouTube/);
+ assert.doesNotMatch(page,/type="password"/);
+});
+test('only a signed-in session can create a Google consent request',async()=>{
+ const env=readyEnv();env.YTDB=new InMemoryDB();
+ const {code,cookie}=await extractCsrf(env);
+ const r=await worker.fetch(request('/oauth/start',{
+  method:'POST',headers:{cookie,'content-type':'application/x-www-form-urlencoded','origin':'null'},
+  body:new URLSearchParams({csrf:code})
+ }),env);
+ assert.equal(r.status,401);
+ assert.match(await r.text(),/sesión ha caducado/);
+ assert.equal(env.YTDB.oauthAttempts,0);
+});
+test('after signing in, Google connect has a visible link for mobile browsers',async()=>{
+ const {env,db,sessionCookie,csrf,csrfCookie}=await loggedIn();
+ const r=await worker.fetch(request('/oauth/start',{
+  method:'POST',headers:{'content-type':'application/x-www-form-urlencoded','cookie':sessionCookie+'; '+csrfCookie,'origin':'null'},
+  body:new URLSearchParams({csrf})
+ }),env);
+ assert.equal(r.status,200);
+ const html=await r.text();
+ assert.match(html,/Continuar con Google y seleccionar mi canal/);
+ assert.match(html,/https:\/\/accounts.google.com\/o\/oauth2\/v2\/auth/);
+ assert.match(html,/code_challenge_method=S256/);
+ assert.match(html,/redirect_uri=/);
+ assert.equal(db.oauthAttempts,1);
  assert.match(r.headers.get('set-cookie')||'',/ihyt_bind=/);
+ assert.doesNotMatch(html,/access_token|refresh_token|client_secret/);
+});
+test('session is not permanent: expired session blocks start',async()=>{
+ const {env,db,sessionCookie,csrf,csrfCookie}=await loggedIn();
+ for(const key of db.sessions.keys())db.sessions.set(key,0);
+ const r=await worker.fetch(request('/oauth/start',{
+  method:'POST',headers:{'content-type':'application/x-www-form-urlencoded','cookie':sessionCookie+'; '+csrfCookie},
+  body:new URLSearchParams({csrf})
+ }),env);
+ assert.equal(r.status,401);
+ assert.equal(db.oauthAttempts,0);
+});
+test('logged out session loses permission to connect Google',async()=>{
+ const {env,db,sessionCookie,csrf,csrfCookie}=await loggedIn();
+ const r=await worker.fetch(request('/session/logout',{
+  method:'POST',headers:{'content-type':'application/x-www-form-urlencoded','cookie':sessionCookie+'; '+csrfCookie},
+  body:new URLSearchParams({csrf})
+ }),env);
+ assert.equal(r.status,303);
+ assert.equal(db.sessions.size,0);
+ const second=await worker.fetch(request('/oauth/start',{
+  method:'POST',headers:{'content-type':'application/x-www-form-urlencoded','cookie':sessionCookie+'; '+csrfCookie},
+  body:new URLSearchParams({csrf})
+ }),env);
+ assert.equal(second.status,401);
 });
