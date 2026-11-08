@@ -534,3 +534,89 @@ test('read-only verification refuses OAuth redirects and never follows tokens',a
   assert.equal(calls,1);
  }finally{globalThis.fetch=prior;}
 });
+
+
+test('long-form video duration parses safely and excludes invalid durations',()=>{
+ assert.equal(TEST.safeDuration('PT10M20S'),620);
+ assert.equal(TEST.safeDuration('PT2M59S'),179);
+ assert.equal(TEST.safeDuration('PT4M'),240);
+ assert.equal(TEST.safeDuration('PT1H20M'),4800);
+ assert.equal(TEST.safeDuration('PT-10M'),0);
+ assert.equal(TEST.safeDuration('a video'),0);
+ assert.equal(TEST.safeDuration('PT'),0);
+});
+test('anonymous users cannot list channel uploads',async()=>{
+ const env=readyEnv();
+ env.YTDB={prepare(){throw Error('unauthorized user cannot query D1 video tokens');}};
+ const r=await worker.fetch(request('/channel/videos'),env);
+ assert.equal(r.status,401);
+ assert.match(await r.text(),/Sesión caducada/);
+});
+test('channel listing verifies owner, excludes Shorts and never makes video writes',async()=>{
+ const own='UC'+'q'.repeat(22),raw=Buffer.alloc(32,71);
+ const iv=crypto.getRandomValues(new Uint8Array(12));
+ const key=await crypto.subtle.importKey('raw',raw,'AES-GCM',false,['encrypt']);
+ const cipher=await crypto.subtle.encrypt(
+  {name:'AES-GCM',iv,additionalData:new TextEncoder().encode(own)},
+  key,new TextEncoder().encode('test-only-refresh-token'));
+ const env=readyEnv();env.OAUTH_TOKEN_KEY_B64=raw.toString('base64');
+ const stored={channel_id:own,token_iv:Buffer.from(iv).toString('base64url'),token_ct:Buffer.from(cipher).toString('base64url')};
+ env.YTDB={prepare(sql){
+  assert.match(sql,/SELECT channel_id,token_iv,token_ct/);
+  return {first:async()=>stored};
+ }};
+ let calls=0;
+ const original=globalThis.fetch;
+ globalThis.fetch=async(url,opt)=>{
+  calls++;
+  assert.equal(opt.redirect,'manual','No OAuth credential may follow an HTTP redirect');
+  if(calls===1){
+   assert.equal(url,'https://oauth2.googleapis.com/token');
+   return Response.json({access_token:'synthetic-access-token'});
+  }
+  assert.equal(opt.method,'GET','YouTube API is strictly read-only');
+  assert.equal(opt.headers.authorization,'Bearer synthetic-access-token');
+  if(calls===2)return Response.json({items:[{id:own,contentDetails:{relatedPlaylists:{uploads:'UUtestPlaylist'}}}]});
+  if(calls===3)return Response.json({items:[{contentDetails:{videoId:'abcdefghijk'}},{contentDetails:{videoId:'lmnopqrstuv'}},{contentDetails:{videoId:'12345678901'}}]});
+  if(calls===4)return Response.json({items:[
+   {id:'abcdefghijk',snippet:{channelId:own,title:'Our long story',publishedAt:'2026-11-08T13:00:00Z'},status:{privacyStatus:'private'},contentDetails:{duration:'PT8M25S'}},
+   {id:'lmnopqrstuv',snippet:{channelId:own,title:'Our Shorts clip'},status:{privacyStatus:'public'},contentDetails:{duration:'PT59S'}},
+   {id:'12345678901',snippet:{channelId:'UCwrongchannel',title:'Someone else'},contentDetails:{duration:'PT9M'}}
+  ]});
+  throw Error('Unexpected extra request');
+ };
+ try{
+  const result=await TEST.listOwnerUploads(env);
+  assert.equal(result.ok,true,JSON.stringify(result));
+  assert.equal(result.checked,2);
+  assert.equal(result.long_videos.length,1);
+  assert.equal(result.long_videos[0].title,'Our long story');
+  assert.equal(result.long_videos[0].privacy,'private');
+  assert.equal(result.long_videos[0].seconds,505);
+  assert.equal(result.excluded_short,1);
+  assert.equal(result.total_seen,3);
+  assert.equal(result.read_only,true);
+  assert.equal(calls,4);
+ }finally{globalThis.fetch=original;}
+});
+test('listing rejects a YouTube channel different from the owner',async()=>{
+ const own='UC'+'b'.repeat(22),raw=Buffer.alloc(32,21),iv=crypto.getRandomValues(new Uint8Array(12));
+ const k=await crypto.subtle.importKey('raw',raw,'AES-GCM',false,['encrypt']);
+ const cipher=await crypto.subtle.encrypt({name:'AES-GCM',iv,additionalData:new TextEncoder().encode(own)},k,new TextEncoder().encode('fake-refresh'));
+ const env=readyEnv();env.OAUTH_TOKEN_KEY_B64=raw.toString('base64');
+ env.YTDB={prepare(){return {first:async()=>({channel_id:own,token_iv:Buffer.from(iv).toString('base64url'),token_ct:Buffer.from(cipher).toString('base64url')})};}};
+ const prior=globalThis.fetch;
+ let requests=0;
+ globalThis.fetch=async()=>{
+  requests++;
+  if(requests===1)return Response.json({access_token:'dummy'});
+  if(requests===2)return Response.json({items:[{id:'UCwrongowner',contentDetails:{relatedPlaylists:{uploads:'UUwrong'}}}]});
+  throw Error('Must not inspect another user playlist');
+ };
+ try{
+  const result=await TEST.listOwnerUploads(env);
+  assert.equal(result.ok,false);
+  assert.equal(result.kind,'owner_playlist_not_found');
+  assert.equal(requests,2);
+ }finally{globalThis.fetch=prior;}
+});
