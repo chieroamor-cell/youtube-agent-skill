@@ -30,7 +30,7 @@ test('alternative title is used only when expressly selected',()=>{
  assert.equal(safeMetadataCandidate(video(),draft(),owner,{useAlternate:true}).snippet.title,'The Story Behind Early Video Games');
 });
 test('long original descriptions block unsafe loss of credits',()=>{
- const v=video();v.snippet.description='a'.repeat(4900);
+ const v=video();v.snippet.description='a'.repeat(4980);
  assert.throws(()=>safeMetadataCandidate(v,draft(),owner),/description_too_long/);
 });
 test('default and unapproved requests make ZERO external API calls',async()=>{
