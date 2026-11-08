@@ -351,13 +351,17 @@ export default {
     if(!ready(env))return html('<p>La conexión está preparada, pero faltan las credenciales o su activación en Cloudflare.</p><p>URI de retorno:<br><code>'+escapeHtml(REDIRECT)+'</code></p>',503);
     const csrf=rnd(32);
     const logged=await adminSession(request,env);
+    const existing=logged?await env.YTDB.prepare("SELECT channel_id,channel_title,status FROM oauth_channel WHERE singleton=1").first():null;
+    const currentChannel=existing?.status==='active'?'<p><strong>Canal conectado: '+escapeHtml(existing.channel_title)+'</strong></p><p>ID: <code>'+escapeHtml(existing.channel_id)+'</code></p>':'';
+    const connectForm=existing?.status==='active'?'':'<form method="post" action="/oauth/start">'+csrfInput(csrf)+'<button type="submit">2. Conectar mi YouTube</button></form>';
     const content=logged?
-     '<h2>Sesión iniciada</h2><p>Consulta el canal que autorizaste. No se modificarán vídeos.</p>'+
+     '<h2>Sesión iniciada</h2>'+currentChannel+
+     '<p>Ya puedes consultar vídeos largos del canal. Los Shorts y las publicaciones existentes no se modificarán.</p>'+
      '<p><a href="/channel/verify">Verificar el canal (solo lectura)</a></p>'+
      '<p><a href="/channel/videos">Ver mis vídeos largos (solo lectura)</a></p>'+
-     '<form method="post" action="/oauth/start">'+csrfInput(csrf)+'<button type="submit">2. Conectar mi YouTube</button></form>'+
+     connectForm+
      '<form method="post" action="/session/logout">'+csrfInput(csrf)+'<button type="submit">Cerrar sesión</button></form>':
-     '<p>Primero entra con tu contraseña de administración. Después aparecerá el botón para conectar YouTube.</p>'+
+     '<p>Primero entra con tu contraseña de administración. Después aparecerá el panel de YouTube.</p>'+
      '<form method="post" action="/session/login">'+csrfInput(csrf)+'<label for="admin-code">Contraseña de administración</label>'+
      '<input id="admin-code" name="code" type="password" required minlength="24" autocomplete="current-password" placeholder="Tu contraseña segura">'+
      '<button type="submit">1. Entrar</button></form>';
