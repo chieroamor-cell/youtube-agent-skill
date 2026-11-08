@@ -35,3 +35,12 @@
 **No modificar las credenciales OAuth del bot antiguo.**
 
 Documentación: <https://developers.google.com/identity/protocols/oauth2/web-server> y <https://developers.google.com/youtube/v3/guides/authentication>
+
+## Recuperación del retorno de Google (corrección 2026-11-08)
+
+- Se ha corregido el fallo que podía mostrar `GOOGLE_CALLBACK`: los intentos OAuth caducados se detectan sin ejecutar sentencias de escritura con `.first()`. Las actualizaciones de D1 usan `.run()` y verifican que **exactamente una** fila cambió.
+- La página de retorno clasifica cualquier nuevo fallo en fases seguras, como `GOOGLE_STATE_CHECK`, `GOOGLE_TOKEN_EXCHANGE`, `YOUTUBE_CHANNEL_CHECK` o `ENCRYPT_AND_STORE`, sin mostrar contraseñas, tokens, códigos ni consultas.
+- Se han probado con datos simulados la caducidad y el uso único del estado OAuth, el almacenamiento cifrado y la confirmación del canal; **no significa que se haya autenticado el canal real**.
+- **No reutilizar ni recargar** una URL antigua `/oauth/callback?...`: el código OAuth de Google es de un solo uso y el enlace de estado caduca a los 10 minutos. Una vez caducado, se debe abrir desde cero `/connect`, entrar con la contraseña y generar un enlace nuevo mediante **2. Conectar mi YouTube**.
+- Realizar todo el recorrido en la misma ventana de Chrome para conservar las cookies de sesión, sin pegar ni compartir URL de retorno (pueden contener un código temporal).
+- Los vídeos largos solo se optimizarán después de comprobar mediante la API el canal correcto; **no está activada ninguna escritura**, subida ni publicación.
