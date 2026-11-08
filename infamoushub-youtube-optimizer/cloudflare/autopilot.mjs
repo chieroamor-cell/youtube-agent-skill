@@ -100,3 +100,30 @@ export async function getDrafts(env,channelId){
  const r=await env.YTDB.prepare('SELECT video_id,original_title,proposed_title,alternate_title,proposed_description,suggested_tags_json,thumbnail_brief,duration_seconds,privacy,status,created_at FROM optimizer_drafts WHERE channel_id=? ORDER BY created_at DESC,video_id DESC LIMIT 35').bind(channelId).all();
  return r.results||[];
 }
+
+
+// Owner-only explicit drafting for an existing long video; never modifies YouTube.
+// The caller must enforce an authenticated admin session and double-submit CSRF.
+export async function prepareExistingLongVideo(env,readUploads,videoId){
+ if(!/^[A-Za-z0-9_-]{11}$/.test(videoId||''))return {status:'invalid_video_id',created:0};
+ if(!env.YTDB)return {status:'missing_database',created:0};
+ const connected=await env.YTDB.prepare(
+  "SELECT channel_id FROM oauth_channel WHERE singleton=1 AND status='active'").first();
+ if(!connected||!/^UC[A-Za-z0-9_-]{10,}$/.test(connected.channel_id||''))
+  return {status:'not_authorized',created:0};
+ let feed;
+ try{feed=await readUploads(env)}catch(e){return {status:'youtube_read_failed',created:0}};
+ if(!feed?.ok||feed.channel_id!==connected.channel_id)return {status:'channel_mismatch_or_unavailable',created:0};
+ const video=(Array.isArray(feed.long_videos)?feed.long_videos:[]).find(v=>v.id===videoId);
+ if(!video||!Number.isInteger(video.seconds)||video.seconds<240)return {status:'video_not_eligible_or_not_recent',created:0};
+ let draft;
+ try{draft=prepareDraft(video,connected.channel_id)}catch(e){return {status:'invalid_video_metadata',created:0}};
+ const result=await env.YTDB.prepare(
+  "INSERT OR IGNORE INTO optimizer_drafts(video_id,channel_id,original_title,proposed_title,proposed_description,suggested_tags_json,thumbnail_brief,duration_seconds,privacy,video_published_at,status,alternate_title) VALUES (?,?,?,?,?,?,?,?,?,?,'needs_review',?)")
+  .bind(draft.video_id,draft.channel_id,draft.original_title,draft.proposed_title,
+   draft.proposed_description,draft.suggested_tags_json,draft.thumbnail_brief,
+   draft.duration_seconds,draft.privacy,draft.video_published_at,draft.alternate_title).run();
+ return {status:result.meta?.changes===1?'draft_created':'already_exists',
+  video_id:videoId,created:result.meta?.changes===1?1:0,
+  youtube_modified:false,thumbnail_uploaded:false};
+}
