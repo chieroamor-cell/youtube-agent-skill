@@ -120,7 +120,7 @@ class InMemoryDB {
    async first(){
     if(sql.includes('FROM oauth_admin_sessions'))
       return db.sessions.has(args[0])&&db.sessions.get(args[0])>=args[1]?{expires_at:db.sessions.get(args[0])}:null;
-    if(sql.includes('FROM oauth_channel'))return null;
+    if(sql.includes('FROM oauth_channel'))return db.channels[0]||null;
     throw Error('Unexpected SQL first: '+sql);
    },
    async run(){
@@ -619,4 +619,33 @@ test('listing rejects a YouTube channel different from the owner',async()=>{
   assert.equal(result.kind,'owner_playlist_not_found');
   assert.equal(requests,2);
  }finally{globalThis.fetch=prior;}
+});
+
+
+test('already-connected channel shows long-video link right after login, never new Google consent',async()=>{
+ const env=readyEnv(),db=new InMemoryDB();
+ const id='UC'+'c'.repeat(22);
+ db.channels=[{channel_id:id,channel_title:'infamoushub <test>',status:'active'}];
+ env.YTDB=db;
+ const {code,cookie}=await extractCsrf(env);
+ const r=await worker.fetch(request('/session/login',{
+  method:'POST',headers:{'content-type':'application/x-www-form-urlencoded','cookie':cookie,'origin':'null'},
+  body:new URLSearchParams({csrf:code,code:env.OAUTH_ADMIN_CODE})
+ }),env);
+ assert.equal(r.status,200);
+ const body=await r.text();
+ assert.match(body,/Sesión iniciada/);
+ assert.match(body,/\/channel\/videos/);
+ assert.match(body,/\/channel\/verify/);
+ assert.match(body,/infamoushub &lt;test&gt;/);
+ assert.doesNotMatch(body,/<test>/);
+ assert.doesNotMatch(body,/2. Conectar mi YouTube/);
+ assert.doesNotMatch(body,/accounts\.google\.com/);
+ const session=(r.headers.getSetCookie().find(c=>c.startsWith('__Host-ihyt_admin='))||'').split(';')[0];
+ assert.ok(session);
+ const home=await worker.fetch(request('/connect',{headers:{cookie:session}}),env);
+ assert.equal(home.status,200);
+ const content=await home.text();
+ assert.match(content,/Ver mis vídeos largos/);
+ assert.doesNotMatch(content,/2. Conectar mi YouTube/);
 });
