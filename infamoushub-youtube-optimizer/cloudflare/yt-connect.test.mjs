@@ -662,3 +662,32 @@ test('an unauthenticated user cannot submit a draft request for any video',async
  assert.equal(r.status,401);
  assert.match(await r.text(),/Sesión caducada/);
 });
+
+
+test('thumbnail preview refuses public visitors before inspecting any saved draft',async()=>{
+ const env=readyEnv();
+ env.YTDB={prepare(){throw Error('Anonymous user must not query database');}};
+ const r=await worker.fetch(request('/drafts/thumbnail?video_id=abcdefghijk'),env);
+ assert.equal(r.status,401);
+ assert.match(await r.text(),/Sesión caducada/);
+});
+test('thumbnail preview is owner-bound and cannot use a different channels video',async()=>{
+ const env=readyEnv();
+ const owner='UC'+'x'.repeat(22);
+ const session='__Host-ihyt_admin='+'a'.repeat(50);
+ let calls=0;
+ env.YTDB={prepare(sql){
+  calls++;
+  if(sql.startsWith('SELECT expires_at FROM oauth_admin_sessions'))
+   return {bind(){return {first:async()=>({expires_at:Math.floor(Date.now()/1000)+300})}}};
+  if(sql.startsWith('SELECT channel_id FROM oauth_channel'))
+   return {first:async()=>({channel_id:owner})};
+  if(sql.startsWith('SELECT video_id,channel_id,original_title,thumbnail_brief,status FROM optimizer_drafts'))
+   return {bind(id,own){assert.equal(id,'abcdefghijk');assert.equal(own,owner);return {first:async()=>null}}};
+  throw Error('Unrecognized SQL '+sql);
+ }};
+ const r=await worker.fetch(request('/drafts/thumbnail?video_id=abcdefghijk',{headers:{cookie:session}}),env);
+ assert.equal(r.status,404);
+ assert.match(await r.text(),/No hay propuesta/);
+ assert.ok(calls>=3);
+});
