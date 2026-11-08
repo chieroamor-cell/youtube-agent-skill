@@ -31,7 +31,7 @@ class MemoryDB {
       if(db.drafts.has(args[0]))return {meta:{changes:0}};
       db.drafts.set(args[0],{video_id:args[0],channel_id:args[1],original_title:args[2],
         proposed_title:args[3],proposed_description:args[4],suggested_tags_json:args[5],
-        thumbnail_brief:args[6],duration_seconds:args[7],privacy:args[8],status:'needs_review'});
+        thumbnail_brief:args[6],duration_seconds:args[7],privacy:args[8],alternate_title:args[10],status:'needs_review'});
       return {meta:{changes:1}};
     }
     if(query.startsWith('UPDATE optimizer_watch_state')){
@@ -44,7 +44,7 @@ class MemoryDB {
     if(query.startsWith('SELECT video_id FROM optimizer_seen_videos')){
       return {results:args.slice(1).filter(id=>db.seen.has(id)).map(video_id=>({video_id}))};
     }
-    if(query.startsWith('SELECT video_id,original_title,proposed_title,proposed_description')){
+    if(query.startsWith('SELECT video_id,original_title,proposed_title,alternate_title,proposed_description')){
       return {results:[...db.drafts.values()].filter(x=>x.channel_id===args[0])};
     }
     throw Error('Unexpected all '+query);
@@ -65,6 +65,7 @@ const feed=items=>async()=>({ok:true,channel_id:channel,long_videos:items});
 test('drafts do not invent story facts; preserve original video credits',()=>{
  const d=prepareDraft(vid('abcdefghijk'),channel);
  assert.equal(d.proposed_title,d.original_title);
+ assert.ok(d.alternate_title.startsWith('The Story Behind'));
  assert.match(d.proposed_description,/Credits: Original source/);
  assert.match(d.thumbnail_brief,/rights|licensed/i);
  assert.equal(d.status,'needs_review');
@@ -98,6 +99,7 @@ test('newly discovered long video becomes one draft, not a YouTube update',async
  const drafts=await getDrafts(env,channel);
  assert.equal(drafts.length,1);
  assert.equal(drafts[0].video_id,'lmnopqrstuv');
+ assert.match(drafts[0].alternate_title,/Nintendo history/);
  assert.match(drafts[0].proposed_description,/Credits: Original source/);
 });
 test('fail closed when disabled; do not call YouTube',async()=>{
