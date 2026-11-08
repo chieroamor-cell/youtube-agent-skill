@@ -65,9 +65,21 @@ async function login(request,env){
  const input=await form(request);
  if(!await eq(input.get('code'),env.OAUTH_ADMIN_CODE))return html(nav('<p>Contraseña incorrecta. Vuelve a intentar entrar.</p>'),403);
  const session=rnd(48),expires=Math.floor(Date.now()/1000)+1200;
- await env.YTDB.prepare('INSERT INTO oauth_admin_sessions(session_hash,expires_at) VALUES (?,?)')
-  .bind(await sha(session),expires).run();
- return redirect('/connect',adminCookie(session));
+ try{
+  await env.YTDB.prepare('INSERT INTO oauth_admin_sessions(session_hash,expires_at) VALUES (?,?)')
+   .bind(await sha(session),expires).run();
+ }catch(e){
+  return html(nav('<p>No fue posible guardar la sesión. No se conectó Google. Intenta acceder de nuevo.</p>'),503);
+ }
+ // Display step 2 DIRECTLY: no automatic navigation through embedded mobile browsers.
+ const csrf=rnd(32);
+ const body='<h2>Sesión iniciada</h2><p>Primera parte completada. Ahora conecta el canal de YouTube donde ya publicas Shorts.</p>'+
+  '<form action="/oauth/start" method="post">'+csrfInput(csrf)+'<button type="submit">2. Conectar mi YouTube</button></form>'+
+  '<p><a href="/connect">Ver mi sesión</a></p>';
+ const response=html(body,200);
+ response.headers.append('set-cookie',adminCookie(session));
+ response.headers.append('set-cookie',csrfHeader(csrf));
+ return response;
 }
 async function logout(request,env){
  if(!ready(env))return html('<p>Configuración no disponible.</p>',503);
@@ -160,6 +172,14 @@ export default {
    const u=new URL(request.url);
    if(u.origin!==new URL(REDIRECT).origin)return json({error:'wrong_origin'},421);
    if(u.pathname==='/health'&&request.method==='GET')return json({service:'infamoushub-youtube-connect',oauth_configured:!!ready(env),edits_enabled:false,uploads_enabled:false,publication_enabled:false});
+   if(u.pathname==='/health/storage'&&request.method==='GET'){
+    // Safe read-only internal storage availability check; never report identities, counts or tokens.
+    if(!env.YTDB)return json({available:false},503);
+    try{
+     await env.YTDB.prepare('SELECT expires_at FROM oauth_admin_sessions WHERE session_hash=? AND expires_at>=?').bind('health-probe-does-not-match',Math.floor(Date.now()/1000)).first();
+     return json({available:true,kind:'session_lookup_only'});
+    }catch(e){return json({available:false},503);}
+   }
    if((u.pathname==='/'||u.pathname==='/connect')&&request.method==='GET'){
     if(!ready(env))return html('<p>La conexión está preparada, pero faltan las credenciales o su activación en Cloudflare.</p><p>URI de retorno:<br><code>'+escapeHtml(REDIRECT)+'</code></p>',503);
     const csrf=rnd(32);
