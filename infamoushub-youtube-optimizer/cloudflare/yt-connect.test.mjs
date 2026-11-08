@@ -143,10 +143,17 @@ async function loggedIn(){
    'cookie':loginForm.cookie,'origin':'null'},
   body:new URLSearchParams({csrf:loginForm.code,code:env.OAUTH_ADMIN_CODE})
  }),env);
- assert.equal(r.status,303);
- assert.equal(r.headers.get('location'),'/connect');
- const sessionCookie=(r.headers.get('set-cookie')||'').split(';')[0];
- assert.match(sessionCookie,/__Host-ihyt_admin=/);
+ assert.equal(r.status,200);
+ const firstPage=await r.text();
+ assert.match(firstPage,/Sesión iniciada/);
+ assert.match(firstPage,/2. Conectar mi YouTube/);
+ // Both cookies must be set by the same response, without any mobile redirect.
+ const cookies=r.headers.getSetCookie().map(c=>c.split(';')[0]);
+ const sessionCookie=cookies.find(c=>c.startsWith('__Host-ihyt_admin='));
+ const firstCsrfCookie=cookies.find(c=>c.startsWith('__Host-ihyt_csrf='));
+ assert.ok(sessionCookie);
+ assert.ok(firstCsrfCookie);
+ assert.match(firstPage,/name="csrf" value="/);
  const dashboard=await worker.fetch(request('/connect',{headers:{cookie:sessionCookie}}),env);
  assert.equal(dashboard.status,200);
  const page=await dashboard.text();
@@ -213,4 +220,14 @@ test('logged out session loses permission to connect Google',async()=>{
   body:new URLSearchParams({csrf})
  }),env);
  assert.equal(second.status,401);
+});
+
+test('storage health test never exposes session data or channel identifiers',async()=>{
+ const env=readyEnv(), db=new InMemoryDB();
+ env.YTDB=db;
+ const r=await worker.fetch(request('/health/storage'),env);
+ assert.equal(r.status,200);
+ const data=await r.json();
+ assert.deepEqual(data,{available:true,kind:'session_lookup_only'});
+ assert.ok(!JSON.stringify(data).includes('channel_id'));
 });
