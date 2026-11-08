@@ -37,31 +37,53 @@ export async function discoverNewLongVideos(env,readUploads,options={}){
  if(!env.YTDB)return {status:'missing_database',created:0};
  let feed;
  try{feed=await readUploads(env)}catch(e){return {status:'youtube_read_failed',created:0}};
- if(!feed?.ok||!/^UC[A-Za-z0-9_-]{10,}$/.test(feed.channel_id||''))return {status:feed?.kind||'invalid_channel',created:0};
- const channel=feed.channel_id, videos=Array.isArray(feed.long_videos)?feed.long_videos.slice(0,50):[];
- const existing=await env.YTDB.prepare('SELECT channel_id FROM optimizer_watch_state WHERE channel_id=?').bind(channel).first();
- const baseline=!existing;
+ if(!feed?.ok||!/^UC[A-Za-z0-9_-]{10,}$/.test(feed.channel_id||''))
+  return {status:feed?.kind||'invalid_channel',created:0};
+ const channel=feed.channel_id,videos=Array.isArray(feed.long_videos)?feed.long_videos.slice(0,50):[];
+ const initial=await env.YTDB.prepare('SELECT channel_id FROM optimizer_watch_state WHERE channel_id=?').bind(channel).first();
+ const baseline=!initial;
+ const valid=videos.filter(v=>/^[A-Za-z0-9_-]{11}$/.test(v?.id||'')&&Number.isInteger(v.seconds)&&v.seconds>=240);
+ let skipped=videos.length-valid.length,created=0;
+ // One SELECT and one D1.batch() keep this below Free plan's per-invocation query limits
+ // even when the channel has 50 recent long-form videos.
+ const ids=valid.map(v=>v.id);
+ const already=ids.length?await env.YTDB.prepare(
+  'SELECT video_id FROM optimizer_seen_videos WHERE channel_id=? AND video_id IN ('+ids.map(()=>'?').join(',')+')')
+  .bind(channel,...ids).all():{results:[]};
+ const seen=new Set((already.results||[]).map(r=>r.video_id));
+ const fresh=valid.filter(v=>!seen.has(v.id));
+ const stmts=[];
  if(baseline){
-  await env.YTDB.prepare("INSERT OR IGNORE INTO optimizer_watch_state(channel_id,initialized_at,last_scan_at,scan_count) VALUES (?,datetime('now'),datetime('now'),1)").bind(channel).run();
- }
- let created=0, baselineSeen=0, skipped=0;
- for(const v of videos){
-  if(!/^[A-Za-z0-9_-]{11}$/.test(v.id||'')||!Number.isInteger(v.seconds)||v.seconds<240){skipped++;continue;}
-  const result=await env.YTDB.prepare("INSERT OR IGNORE INTO optimizer_seen_videos(video_id,channel_id,first_seen_at) VALUES (?,?,datetime('now'))").bind(v.id,channel).run();
-  if(result.meta?.changes!==1)continue;
-  if(baseline){baselineSeen++;continue;}
-  try{
-   const draft=prepareDraft(v,channel);
-   const saved=await env.YTDB.prepare(
+  // Baseline must be committed atomically with its seen IDs, or a partial failure
+  // could classify old uploads as new on the next scheduled run.
+  for(const v of fresh){
+   stmts.push(env.YTDB.prepare("INSERT OR IGNORE INTO optimizer_seen_videos(video_id,channel_id,first_seen_at) VALUES (?,?,datetime('now'))").bind(v.id,channel));
+  }
+  stmts.push(env.YTDB.prepare("INSERT OR IGNORE INTO optimizer_watch_state(channel_id,initialized_at,last_scan_at,scan_count) VALUES (?,datetime('now'),datetime('now'),0)").bind(channel));
+  await env.YTDB.batch(stmts);
+ }else{
+  for(const video of fresh){
+   let draft;
+   try{draft=prepareDraft(video,channel);}
+   catch(e){skipped++;continue;}
+   // Atomic pair: if a draft cannot be saved, its video ID is not marked seen.
+   stmts.push(env.YTDB.prepare("INSERT OR IGNORE INTO optimizer_seen_videos(video_id,channel_id,first_seen_at) VALUES (?,?,datetime('now'))").bind(video.id,channel));
+   stmts.push(env.YTDB.prepare(
     "INSERT OR IGNORE INTO optimizer_drafts(video_id,channel_id,original_title,proposed_title,proposed_description,suggested_tags_json,thumbnail_brief,duration_seconds,privacy,video_published_at,status) VALUES (?,?,?,?,?,?,?,?,?,?,'needs_review')")
-    .bind(draft.video_id,draft.channel_id,draft.original_title,draft.proposed_title,draft.proposed_description,draft.suggested_tags_json,draft.thumbnail_brief,draft.duration_seconds,draft.privacy,draft.video_published_at).run();
-   created+=saved.meta?.changes||0;
-  }catch(e){skipped++;}
+    .bind(draft.video_id,draft.channel_id,draft.original_title,draft.proposed_title,
+     draft.proposed_description,draft.suggested_tags_json,draft.thumbnail_brief,
+     draft.duration_seconds,draft.privacy,draft.video_published_at));
+  }
+  if(stmts.length){
+   const result=await env.YTDB.batch(stmts);
+   // Every second result belongs to INSERT OR IGNORE draft.
+   for(let i=1;i<result.length;i+=2)created+=Number(result[i]?.meta?.changes||0);
+  }
  }
  await env.YTDB.prepare("UPDATE optimizer_watch_state SET last_scan_at=datetime('now'),scan_count=scan_count+1,last_error=NULL WHERE channel_id=?").bind(channel).run();
  return {status:baseline?'baseline_created':'checked',channel_id:channel,
-  checked:videos.length,baseline_seen:baselineSeen,created,skipped,edits_to_youtube:0,
-  thumbnails_uploaded:0,automatic_publication:false};
+  checked:valid.length,baseline_seen:baseline?valid.length:0,created,skipped,
+  edits_to_youtube:0,thumbnails_uploaded:0,automatic_publication:false};
 }
 export async function getDrafts(env,channelId){
  if(!/^UC[A-Za-z0-9_-]{10,}$/.test(channelId))return [];
