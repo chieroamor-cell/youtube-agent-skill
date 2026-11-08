@@ -10,3 +10,7 @@ CREATE TABLE IF NOT EXISTS oauth_channel (
  created_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS oauth_attempts_expiry ON oauth_attempts(expires_at);
+CREATE TABLE IF NOT EXISTS oauth_admin_sessions (
+ session_hash TEXT PRIMARY KEY, expires_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS oauth_admin_sessions_expires ON oauth_admin_sessions(expires_at);
