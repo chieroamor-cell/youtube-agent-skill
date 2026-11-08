@@ -28,3 +28,6 @@ jobs:
       - name: Test disabled Cloudflare OAuth connector (offline only)
         working-directory: infamoushub-youtube-optimizer
         run: node --test cloudflare/yt-connect.test.mjs
+      - name: Test automatic discovery, safe baseline and offline SEO drafts
+        working-directory: infamoushub-youtube-optimizer
+        run: node --test cloudflare/autopilot.test.mjs
