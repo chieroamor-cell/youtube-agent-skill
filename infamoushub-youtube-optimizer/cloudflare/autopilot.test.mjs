@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
-import {prepareDraft,discoverNewLongVideos,getDrafts,prepareExistingLongVideo} from './autopilot.mjs';
+import {prepareDraft,discoverNewLongVideos,getDrafts,prepareExistingLongVideo,saveOwnerInventory} from './autopilot.mjs';
 import oauthWorker from './yt-connect-worker.mjs';
 
 const channel='UC'+'a'.repeat(22);
@@ -200,4 +200,37 @@ test('manual draft does not accept untrusted IDs or unauthenticated channels',as
  assert.equal(invalid.status,'invalid_video_id');
  const unauthorized=await prepareExistingLongVideo(env,async()=>{throw Error('Should not contact YouTube');},'abcdefghijk');
  assert.equal(unauthorized.status,'not_authorized');
+});
+
+
+test('private owner inventory captures privacy and descriptions in D1 without a YouTube write',async()=>{
+ const id='abcdefghijk',ch='UC'+'a'.repeat(22),rows=[],calls=[];
+ const env={YTDB:{
+   prepare(sql){
+    assert.match(sql,/INSERT INTO optimizer_video_inventory/);
+    assert.match(sql,/ON CONFLICT\(video_id\)/);
+    return {bind(...args){return {sql,args,run:async()=>({meta:{changes:1}})};}};
+   },
+   async batch(statements){
+    for(const stmt of statements){rows.push(stmt.args);calls.push(stmt.sql);}
+    return statements.map(()=>({meta:{changes:1}}));
+   }
+ }};
+ const result=await saveOwnerInventory(env,ch,[{
+  id,title:'Private video',seconds:620,privacy:'private',
+  description:'Credits: Creator-owned visual materials',published:'2026-11-08T09:00:00Z'
+ },{id:'lmnopqrstuv',title:'Short video',seconds:40,privacy:'public'}]);
+ assert.equal(result.stored,1);
+ assert.equal(rows.length,1);
+ assert.equal(rows[0][0],id);
+ assert.equal(rows[0][1],ch);
+ assert.equal(rows[0][3],'private');
+ assert.match(rows[0][5],/Credits:/);
+ assert.equal(calls.length,1);
+});
+test('owner inventory refuses invalid channel and never receives tokens',async()=>{
+ let dbCalled=false;
+ const env={YTDB:{prepare(){dbCalled=true;throw Error('Database must remain unused');}}};
+ await assert.rejects(()=>saveOwnerInventory(env,'wrong',[]),/Invalid owner/);
+ assert.equal(dbCalled,false);
 });
