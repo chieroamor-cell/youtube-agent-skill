@@ -82,3 +82,11 @@ Owner-only pages after login:
 **Do not confuse this with completed full automation:** The cron is active but the first live scheduled scan still needs to be observed; no YouTube metadata or thumbnails are changed. No actual JPG/PNG thumbnail generation has been approved or deployed. Cloudflare Images' independent test did not work in this account, and no paid image plan was enabled. Titles default to original verified titles, not AI-generated clickbait; no transcript is inspected. A dedicated approved metadata writer, rights-cleared thumbnail generator, first private-video test, and safeguards for automatic writes remain pending.
 
 See `cloudflare/AUTOPILOT.md` for deployed config, costs, privacy, and follow-up acceptance checks.
+
+## New: actual JPEG previews and owner review (v0.4.0, Cloudflare)
+
+The owner-facing `/drafts` screen can now render and download **actual 1280×720 JPG thumbnails** using Cloudflare Browser Run on demand. They are original branded graphics based on the verified existing title and must be reviewed for relevance. The exact module was tested live in the connected Cloudflare account with a 62 KB JPG; the test Worker was deleted.
+
+Private owner review forms can store an approved original or alternate title, subject to another YouTube check of owner, privacy and title freshness. Code for an explicit private-only metadata + JPG upload test is implemented with a durable one-time attempt guard, but **the Cloudflare variable `YOUTUBE_WRITE_ENABLED=NO` forbids any real writes**. No automatic YouTube edits, thumbnail uploads, visibility changes or publications have occurred. The hourly cron continues read-only discovery and safe proposals.
+
+See [Cloudflare Autopilot](cloudflare/AUTOPILOT.md) for accurate current status, the first live scan, acceptance blockers, free-tier considerations, and test evidence.
