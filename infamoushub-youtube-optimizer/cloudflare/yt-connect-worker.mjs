@@ -204,9 +204,17 @@ async function login(request,env){
  }catch(e){
   return html(nav('<p>No fue posible guardar la sesión. No se conectó Google. Intenta acceder de nuevo.</p>'),503);
  }
- // Display step 2 DIRECTLY: no automatic navigation through embedded mobile browsers.
+ // Display the already-connected channel directly, without another Google consent request.
  const csrf=rnd(32);
- const body='<h2>Sesión iniciada</h2><p>Primera parte completada. Ahora conecta el canal de YouTube donde ya publicas Shorts.</p>'+
+ let linked;
+ try{linked=await env.YTDB.prepare('SELECT channel_id,channel_title,status FROM oauth_channel WHERE singleton=1').first();}
+ catch(e){return html('<h2>Sesión iniciada</h2><p>No se pudo consultar el canal en este momento. <a href="/connect">Abrir el panel</a>.</p>',503,{'set-cookie':adminCookie(session)});}
+ const validLink=linked?.status==='active'&&/^UC[A-Za-z0-9_-]{10,}$/.test(linked.channel_id||'');
+ const body=validLink?'<h2>Sesión iniciada</h2><p>Canal conectado: <strong>'+escapeHtml(linked.channel_title)+'</strong></p>'+
+  '<p><a href="/channel/videos">Ver mis vídeos largos (solo lectura)</a></p>'+
+  '<p><a href="/channel/verify">Comprobar conexión con YouTube</a></p>'+
+  '<p><a href="/connect">Volver al panel</a></p>':
+  '<h2>Sesión iniciada</h2><p>Primera parte completada. Ahora conecta el canal de YouTube donde ya publicas Shorts.</p>'+
   '<form action="/oauth/start" method="post">'+csrfInput(csrf)+'<button type="submit">2. Conectar mi YouTube</button></form>'+
   '<p><a href="/connect">Ver mi sesión</a></p>';
  const response=html(body,200);
