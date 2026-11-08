@@ -180,6 +180,13 @@ async function uploadsDashboard(request,env){
 }
 
 
+// Stored draft tags are untrusted text; parse as data and escape before presentation.
+function safeDraftTags(raw){
+ try{
+  const tags=JSON.parse(String(raw||'[]'));
+  return Array.isArray(tags)?tags.filter(t=>typeof t==='string').slice(0,12).join(', '):'';
+ }catch(e){return '';}
+}
 // Private preview queue: drafts only, never an API write to YouTube.
 async function draftDashboard(request,env){
  if(!ready(env))return html('<p>Conexión no disponible.</p>',503);
@@ -191,7 +198,9 @@ async function draftDashboard(request,env){
  catch(e){return html(nav('<p>No se pudieron consultar las propuestas guardadas.</p>'),503);}
  const records=drafts.map(d=>'<article style="border-bottom:1px solid #aaa;padding:14px 0"><h3>'+escapeHtml(d.original_title)+'</h3>'+
   '<p>Vídeo: <a rel="noopener noreferrer" href="https://www.youtube.com/watch?v='+escapeHtml(d.video_id)+'">'+escapeHtml(d.video_id)+'</a></p>'+
-  '<p><strong>Título propuesto:</strong> '+escapeHtml(d.proposed_title)+'</p>'+
+  '<p><strong>Título seguro:</strong> '+escapeHtml(d.proposed_title)+'</p>'+
+  '<p><strong>Título alternativo para revisar:</strong> '+escapeHtml(d.alternate_title||'No disponible')+'</p>'+
+  '<p><strong>Etiquetas sugeridas:</strong> '+escapeHtml(safeDraftTags(d.suggested_tags_json))+'</p>'+
   '<p><strong>Descripción sugerida:</strong></p><pre style="white-space:pre-wrap;font:inherit;max-height:180px;overflow:auto">'+escapeHtml(d.proposed_description)+'</pre>'+
   '<p><strong>Miniatura (borrador de diseño, no una imagen generada):</strong> '+escapeHtml(d.thumbnail_brief)+'</p>'+
   '<p>Estado: '+escapeHtml(d.status)+' · privacidad original: '+escapeHtml(d.privacy)+'</p></article>').join('');
@@ -214,6 +223,7 @@ async function watchStatus(request,env){
   '<p>Última revisión UTC: '+escapeHtml(status?.last_scan_at||'pendiente')+'</p>'+
   '<p>Revisiones registradas: '+Number(status?.scan_count||0)+
   ' · Propuestas guardadas: '+Number(count?.n||0)+'</p>'+
+  '<p>Último error: '+escapeHtml(status?.last_error||'Ninguno')+'</p>'+
   (status?.last_error?'<p><strong>Último problema:</strong> '+escapeHtml(status.last_error)+'</p>':'')+
   '<p>Los vídeos existentes se consideran referencia la primera vez; solo los nuevos generan propuestas.</p>'+
   '<form method="post" action="/watch/scan">'+csrfInput(csrf)+'<button>Comprobar vídeos nuevos ahora (solo lectura)</button></form>'+
