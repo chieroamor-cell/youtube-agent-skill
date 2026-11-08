@@ -319,3 +319,77 @@ test('callback database exception reveals only phase identifier and no OAuth sec
  assert.match(body,/GOOGLE_STATE_CHECK/);
  assert.doesNotMatch(body,/top-secret-oauth-code|Sensitive SQL details|refresh_token/);
 });
+
+
+test('simulated Google callback stores encrypted token pending and confirms only the owner channel',async()=>{
+ const env=readyEnv(),channelId='UC'+'x'.repeat(20);
+ env.OAUTH_TOKEN_KEY_B64=Buffer.alloc(32,19).toString('base64');
+ const record={status:null,channel_id:null,title:null,iv:null,cipher:null};
+ let consumed=0,networkCalls=0;
+ env.YTDB={
+  prepare(sql){
+   const operation=(...args)=>({
+    async first(){
+     if(sql.startsWith('SELECT expires_at FROM oauth_admin_sessions'))return {expires_at:Math.floor(Date.now()/1000)+500};
+     if(sql.startsWith('SELECT code_verifier FROM oauth_attempts'))return consumed?null:{code_verifier:'mock-valid-pkce-verifier'};
+     if(sql.startsWith('SELECT status FROM oauth_channel'))return record.status?{status:record.status}:null;
+     if(sql.startsWith('SELECT channel_id,channel_title FROM oauth_channel'))return record.status==='active'?{channel_id:channelId,channel_title:'Mock Official Channel'}:null;
+     throw Error('Unexpected SELECT: '+sql);
+    },
+    async run(){
+     if(sql.startsWith('DELETE FROM oauth_attempts')){consumed++;return {meta:{changes:consumed===1?1:0}};}
+     if(sql.startsWith('INSERT OR REPLACE INTO oauth_channel')){
+      assert.equal(args.length,5);
+      [record.channel_id,record.title,record.iv,record.cipher]=args;
+      record.status='pending';return {meta:{changes:1}};
+     }
+     if(sql.startsWith('UPDATE oauth_channel SET status=')){
+      if(record.status!=='pending'||args[0]!==record.channel_id)return {meta:{changes:0}};
+      record.status='active';return {meta:{changes:1}};
+     }
+     throw Error('Unexpected write: '+sql);
+    }
+   });
+   return {bind(...args){return operation(...args);},first:()=>operation().first()};
+  }
+ };
+ const savedFetch=globalThis.fetch;
+ globalThis.fetch=async(url,opts)=>{
+  networkCalls++;
+  if(String(url)==='https://oauth2.googleapis.com/token')
+   return new Response(JSON.stringify({access_token:'mock-access-token',refresh_token:'mock-refresh-token'}),{status:200,headers:{'content-type':'application/json'}});
+  if(String(url).startsWith('https://www.googleapis.com/youtube/v3/channels?'))
+   return new Response(JSON.stringify({items:[{id:channelId,snippet:{title:'Mock Official Channel'}}]}),{status:200,headers:{'content-type':'application/json'}});
+  throw Error('Unexpected external request: '+url);
+ };
+ try{
+  const cookie='__Host-ihyt_admin='+'a'.repeat(52)+'; ihyt_bind='+'b'.repeat(52);
+  const response=await worker.fetch(request('/oauth/callback?state=mock-state&code=mock-oauth-code',{headers:{cookie}}),env);
+  const body=await response.text();
+  assert.equal(response.status,200,body);
+  assert.equal(networkCalls,2);
+  assert.equal(record.channel_id,channelId);
+  assert.equal(record.status,'pending');
+  assert.equal(consumed,1);
+  assert.ok(record.cipher&&record.cipher.length>16);
+  assert.ok(record.iv&&record.iv.length>10);
+  assert.notEqual(record.cipher,'mock-refresh-token');
+  assert.doesNotMatch(body,/mock-refresh-token|mock-access-token|mock-oauth-code/);
+  assert.match(body,/Mock Official Channel/);
+  const csrf=body.match(/name="csrf" value="([^"]+)"/)?.[1];
+  const cookies=response.headers.getSetCookie();
+  const csrfCookie=cookies.find(x=>x.startsWith('__Host-ihyt_csrf='))?.split(';')[0];
+  assert.ok(csrfCookie&&csrf);
+  const confirm=await worker.fetch(request('/oauth/confirm',{
+   method:'POST',headers:{cookie:'__Host-ihyt_admin='+'a'.repeat(52)+'; '+csrfCookie,'content-type':'application/x-www-form-urlencoded'},
+   body:new URLSearchParams({csrf,channel:channelId})
+  }),env);
+  assert.equal(confirm.status,200,await confirm.clone().text());
+  assert.equal(record.status,'active');
+  const again=await worker.fetch(request('/oauth/confirm',{
+   method:'POST',headers:{cookie:'__Host-ihyt_admin='+'a'.repeat(52)+'; '+csrfCookie,'content-type':'application/x-www-form-urlencoded'},
+   body:new URLSearchParams({csrf,channel:channelId})
+  }),env);
+  assert.equal(again.status,409,'A second confirmation must fail');
+ }finally{globalThis.fetch=savedFetch;}
+});
