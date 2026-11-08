@@ -450,3 +450,87 @@ test('An invalid Google authorization response gives a recoverable 502, not an i
   assert.doesNotMatch(body,/mock-auth-code|mock-code-verifier|invalid_grant/);
  }finally{globalThis.fetch=original;}
 });
+
+
+test('read-only verification rejects unauthenticated visitors before accessing any tokens',async()=>{
+ const env=readyEnv();
+ env.YTDB={prepare(){throw Error('No database should be touched without an admin cookie');}};
+ const r=await worker.fetch(request('/channel/verify'),env);
+ assert.equal(r.status,401);
+ assert.match(await r.text(),/Sesión caducada/);
+});
+test('read-only verification decrypts refresh token, checks owner ID, and calls Google safely',async()=>{
+ const channel='UC'+'r'.repeat(22),testRefresh='completely-fake-refresh-token-for-tests';
+ const keybytes=Buffer.alloc(32,27);
+ const k=await crypto.subtle.importKey('raw',keybytes,'AES-GCM',false,['encrypt']);
+ const iv=crypto.getRandomValues(new Uint8Array(12));
+ const cipher=await crypto.subtle.encrypt({name:'AES-GCM',iv,additionalData:new TextEncoder().encode(channel)},k,new TextEncoder().encode(testRefresh));
+ const b64=u=>Buffer.from(u).toString('base64url');
+ const fakeRow={channel_id:channel,channel_title:'Test channel',status:'active',token_iv:b64(iv),token_ct:b64(new Uint8Array(cipher))};
+ const env=readyEnv();
+ env.OAUTH_TOKEN_KEY_B64=keybytes.toString('base64');
+ env.YTDB={prepare(sql){
+  assert.match(sql,/SELECT channel_id,channel_title,status,token_iv,token_ct/);
+  return {first:async()=>fakeRow};
+ }};
+ let requests=0;const prior=globalThis.fetch;
+ globalThis.fetch=async(url,options)=>{
+  requests++;assert.equal(options.redirect,'manual');
+  if(requests===1){
+   assert.equal(String(url),'https://oauth2.googleapis.com/token');
+   const params=new URLSearchParams(options.body.toString());
+   assert.equal(params.get('grant_type'),'refresh_token');
+   assert.equal(params.get('refresh_token'),testRefresh);
+   return Response.json({access_token:'fake-current-access-token'});
+  }
+  assert.equal(requests,2);
+  assert.match(String(url),/^https:\/\/www\.googleapis\.com\/youtube\/v3\/channels\?/);
+  assert.equal(options.headers.authorization,'Bearer fake-current-access-token');
+  return Response.json({items:[{id:channel,snippet:{title:'Test channel from Google'},statistics:{videoCount:'42'}}]});
+ };
+ try{
+  const result=await TEST.verifyChannelReadOnly(env);
+  assert.equal(result.ok,true);
+  assert.equal(result.channel.id,channel);
+  assert.equal(result.channel.name,'Test channel from Google');
+  assert.equal(result.channel.video_count,42);
+  assert.equal(result.write_enabled,false);
+  assert.equal(result.privacy_changes_enabled,false);
+  assert.equal(requests,2);
+ }finally{globalThis.fetch=prior;}
+});
+test('verified channel must match authorized channel ID',async()=>{
+ const authorized='UC'+'x'.repeat(22),wrong='UC'+'y'.repeat(22),refresh='dummy-test-token';
+ const raw=Buffer.alloc(32,20),iv=crypto.getRandomValues(new Uint8Array(12));
+ const k=await crypto.subtle.importKey('raw',raw,'AES-GCM',false,['encrypt']);
+ const c=await crypto.subtle.encrypt({name:'AES-GCM',iv,additionalData:new TextEncoder().encode(authorized)},k,new TextEncoder().encode(refresh));
+ const env=readyEnv();
+ env.OAUTH_TOKEN_KEY_B64=raw.toString('base64');
+ env.YTDB={prepare(){return {first:async()=>({channel_id:authorized,channel_title:'Original',token_iv:Buffer.from(iv).toString('base64url'),token_ct:Buffer.from(c).toString('base64url')})};}};
+ const prior=globalThis.fetch;
+ let called=0;
+ globalThis.fetch=async()=>{
+  called++;return called===1?Response.json({access_token:'test'}):Response.json({items:[{id:wrong,snippet:{title:'Wrong channel'}}]});
+ };
+ try{
+  const result=await TEST.verifyChannelReadOnly(env);
+  assert.equal(result.ok,false);
+  assert.equal(result.kind,'channel_mismatch');
+  assert.equal(called,2);
+ }finally{globalThis.fetch=prior;}
+});
+test('read-only verification refuses OAuth redirects and never follows tokens',async()=>{
+ const channel='UC'+'p'.repeat(22),raw=Buffer.alloc(32,11),iv=crypto.getRandomValues(new Uint8Array(12));
+ const k=await crypto.subtle.importKey('raw',raw,'AES-GCM',false,['encrypt']);
+ const cipher=await crypto.subtle.encrypt({name:'AES-GCM',iv,additionalData:new TextEncoder().encode(channel)},k,new TextEncoder().encode('fake-refresh'));
+ const env=readyEnv();env.OAUTH_TOKEN_KEY_B64=raw.toString('base64');
+ env.YTDB={prepare(){return {first:async()=>({channel_id:channel,channel_title:'Original',token_iv:Buffer.from(iv).toString('base64url'),token_ct:Buffer.from(cipher).toString('base64url')})};}};
+ const prior=globalThis.fetch;let calls=0;
+ globalThis.fetch=async(u,opt)=>{calls++;assert.equal(opt.redirect,'manual');return new Response(null,{status:302,headers:{location:'https://evil.invalid/steal'}});};
+ try{
+  const result=await TEST.verifyChannelReadOnly(env);
+  assert.equal(result.ok,false);
+  assert.equal(result.kind,'unexpected_google_redirect');
+  assert.equal(calls,1);
+ }finally{globalThis.fetch=prior;}
+});
