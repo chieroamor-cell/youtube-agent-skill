@@ -204,7 +204,16 @@ export default {
    // Safe error categories only: never expose OAuth codes, tokens, headers or submitted passwords.
    const known={'Invalid origin':'form_origin_rejected','Cross-site submission rejected':'cross_site_rejected','Invalid CSRF token':'session_token_mismatch','Invalid content type':'form_content_type_rejected','Payload too large':'body_limit_exceeded'};
    const error=known[e?.message]||'internal_error';
-   return json({error},error==='internal_error'?500:403);
+   if(error==='internal_error'){
+    // Fail closed with a non-sensitive step ID, never with exception details or OAuth values.
+    const pathname=new URL(request.url).pathname;
+    const phase=pathname==='/session/login'?'LOGIN':pathname==='/connect'?'SESSION':
+      pathname==='/oauth/start'?'GOOGLE_START':pathname==='/oauth/callback'?'GOOGLE_CALLBACK':
+      pathname==='/oauth/confirm'?'CHANNEL_CONFIRM':'OTHER';
+    return html('<p>No se completó el paso ('+phase+'). No se ha cambiado ningún vídeo.</p>'+
+     '<p><a href="/connect">Volver a la conexión</a></p>',503);
+   }
+   return json({error},403);
   }
  }
 };
