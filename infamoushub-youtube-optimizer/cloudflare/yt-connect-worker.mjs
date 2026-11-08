@@ -214,6 +214,7 @@ async function watchStatus(request,env){
   '<p>Última revisión UTC: '+escapeHtml(status?.last_scan_at||'pendiente')+'</p>'+
   '<p>Revisiones registradas: '+Number(status?.scan_count||0)+
   ' · Propuestas guardadas: '+Number(count?.n||0)+'</p>'+
+  (status?.last_error?'<p><strong>Último problema:</strong> '+escapeHtml(status.last_error)+'</p>':'')+
   '<p>Los vídeos existentes se consideran referencia la primera vez; solo los nuevos generan propuestas.</p>'+
   '<form method="post" action="/watch/scan">'+csrfInput(csrf)+'<button>Comprobar vídeos nuevos ahora (solo lectura)</button></form>'+
   '<p><a href="/drafts">Ver propuestas</a> · <a href="/connect">Volver al panel</a></p>',
