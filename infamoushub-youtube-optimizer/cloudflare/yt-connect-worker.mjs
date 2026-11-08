@@ -60,6 +60,69 @@ async function adminSession(request,env){
  .bind(await sha(token),Math.floor(Date.now()/1000)).first();
  return !!row;
 }
+
+// Read-only verification of the already authorized channel. No new consent or video writes.
+const fromBase64url=input=>{
+ if(typeof input!=='string'||!/^[A-Za-z0-9_-]{8,10000}$/.test(input))throw Error('invalid_stored_ciphertext');
+ const base=input.replace(/-/g,'+').replace(/_/g,'/')+'='.repeat((4-input.length%4)%4);
+ return Uint8Array.from(atob(base),ch=>ch.charCodeAt(0));
+};
+async function decryptStoredRefresh(env,connected){
+ const keyBytes=Uint8Array.from(atob(env.OAUTH_TOKEN_KEY_B64),c=>c.charCodeAt(0));
+ if(keyBytes.length!==32)throw Error('invalid_storage_key');
+ const k=await crypto.subtle.importKey('raw',keyBytes,'AES-GCM',false,['decrypt']);
+ const payload=await crypto.subtle.decrypt({name:'AES-GCM',iv:fromBase64url(connected.token_iv),
+  additionalData:encoder.encode(connected.channel_id)},k,fromBase64url(connected.token_ct));
+ return new TextDecoder().decode(payload);
+}
+async function verifyChannelReadOnly(env){
+ const connected=await env.YTDB.prepare("SELECT channel_id,channel_title,status,token_iv,token_ct FROM oauth_channel WHERE singleton=1 AND status='active'").first();
+ if(!connected)return {ok:false,kind:'not_connected'};
+ // Safety: never use an OAuth credential for a different channel.
+ if(!/^UC[A-Za-z0-9_-]{10,}$/.test(connected.channel_id))return {ok:false,kind:'invalid_channel_id'};
+ const refresh=await decryptStoredRefresh(env,connected);
+ const payload=new URLSearchParams({
+  client_id:env.GOOGLE_OAUTH_CLIENT_ID,client_secret:env.GOOGLE_OAUTH_CLIENT_SECRET,
+  refresh_token:refresh,grant_type:'refresh_token'
+ });
+ const response=await fetch('https://oauth2.googleapis.com/token',{
+  method:'POST',headers:{'content-type':'application/x-www-form-urlencoded'},
+  body:payload,redirect:'manual'
+ });
+ if(response.status>=300&&response.status<400)return {ok:false,kind:'unexpected_google_redirect'};
+ if(!response.ok)return {ok:false,kind:'google_token_rejected'};
+ const token=await response.json();
+ if(!token||typeof token.access_token!=='string'||!token.access_token)return {ok:false,kind:'token_missing'};
+ const result=await fetch('https://www.googleapis.com/youtube/v3/channels?part=id%2Csnippet%2Cstatistics&mine=true',{
+  method:'GET',headers:{authorization:'Bearer '+token.access_token},redirect:'manual'
+ });
+ if(result.status>=300&&result.status<400)return {ok:false,kind:'unexpected_youtube_redirect'};
+ if(!result.ok)return {ok:false,kind:'youtube_api_rejected'};
+ const payloadData=await result.json();
+ const items=Array.isArray(payloadData.items)?payloadData.items:[];
+ const channel=items.find(c=>c.id===connected.channel_id);
+ if(!channel)return {ok:false,kind:'channel_mismatch'};
+ return {ok:true,channel:{
+  id:connected.channel_id,name:String(channel.snippet?.title||connected.channel_title).slice(0,100),
+  video_count:Number(channel.statistics?.videoCount)||0
+ },write_enabled:false,privacy_changes_enabled:false};
+}
+async function channelVerification(request,env){
+ if(!ready(env))return html('<p>Conexión no disponible.</p>',503);
+ if(!await adminSession(request,env))return html(nav('<p>Sesión caducada. Vuelve a entrar con tu contraseña de administración.</p>'),401);
+ let report;
+ try{report=await verifyChannelReadOnly(env);}
+ catch(e){report={ok:false,kind:'read_check_failed'};}
+ if(!report.ok)return html('<h2>Comprobación pendiente</h2><p>No se pudo verificar el canal mediante YouTube en este intento (código: '+
+  escapeHtml(report.kind)+'). Ningún vídeo ha cambiado.</p>'+nav(''),503);
+ return html('<h2>Conexión verificada con YouTube</h2>'+
+  '<p>Canal: <strong>'+escapeHtml(report.channel.name)+'</strong></p>'+
+  '<p>ID: <code>'+escapeHtml(report.channel.id)+'</code></p>'+
+  '<p>Vídeos indicados por YouTube: '+Number(report.channel.video_count)+'</p>'+
+  '<p>Esta prueba es solo de lectura. Los cambios de título, miniatura y privacidad siguen desactivados.</p>'+
+  '<p><a href="/connect">Volver al panel</a></p>');
+}
+
 async function login(request,env){
  if(!ready(env))return html('<p>La autorización aún no está configurada.</p>',503);
  const input=await form(request);
@@ -197,7 +260,8 @@ async function confirm(request,env){
  const channel=f.get('channel')||'';
  const r=await activateChannel(env.YTDB,channel,Math.floor(Date.now()/1000));
  if(!r)return html('<p>No coincide el canal o ha caducado la confirmación.</p>',409);
- return html('<p>Conexión confirmada para <strong>'+escapeHtml(r.channel_title)+'</strong> (<code>'+escapeHtml(r.channel_id)+'</code>).</p><p>El agente sigue sin publicar ni modificar vídeos. La prueba real de lectura será el siguiente paso.</p>');
+ return html('<p>Conexión confirmada para <strong>'+escapeHtml(r.channel_title)+'</strong> (<code>'+escapeHtml(r.channel_id)+'</code>).</p>'+
+  '<p>El agente sigue sin publicar ni modificar vídeos.</p><p><a href="/channel/verify">Comprobar conexión con YouTube (solo lectura)</a></p>');
 }
 export default {
  async fetch(request,env){
@@ -218,7 +282,8 @@ export default {
     const csrf=rnd(32);
     const logged=await adminSession(request,env);
     const content=logged?
-     '<h2>Sesión iniciada</h2><p>Ahora puedes conectar el mismo canal donde ya publicas Shorts. Google te mostrará sus permisos.</p>'+
+     '<h2>Sesión iniciada</h2><p>Consulta el canal que autorizaste. No se modificarán vídeos.</p>'+
+     '<p><a href="/channel/verify">Verificar el canal (solo lectura)</a></p>'+
      '<form method="post" action="/oauth/start">'+csrfInput(csrf)+'<button type="submit">2. Conectar mi YouTube</button></form>'+
      '<form method="post" action="/session/logout">'+csrfInput(csrf)+'<button type="submit">Cerrar sesión</button></form>':
      '<p>Primero entra con tu contraseña de administración. Después aparecerá el botón para conectar YouTube.</p>'+
@@ -227,6 +292,7 @@ export default {
      '<button type="submit">1. Entrar</button></form>';
     return html(content,200,{'set-cookie':csrfHeader(csrf)});
    }
+   if(u.pathname==='/channel/verify'&&request.method==='GET')return await channelVerification(request,env);
    if(u.pathname==='/session/login'&&request.method==='POST')return await login(request,env);
    if(u.pathname==='/session/logout'&&request.method==='POST')return await logout(request,env);
    if(u.pathname==='/oauth/start'&&request.method==='POST')return await start(request,env);
@@ -250,4 +316,4 @@ export default {
   }
  }
 };
-export const TEST={REDIRECT,SCOPE,escapeHtml,ready,consumeAttempt,activateChannel};
+export const TEST={REDIRECT,SCOPE,escapeHtml,ready,consumeAttempt,activateChannel,verifyChannelReadOnly};
