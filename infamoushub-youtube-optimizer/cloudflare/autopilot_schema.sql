@@ -8,7 +8,7 @@ CREATE TABLE IF NOT EXISTS optimizer_seen_videos (
 CREATE INDEX IF NOT EXISTS optimizer_seen_channel ON optimizer_seen_videos(channel_id);
 CREATE TABLE IF NOT EXISTS optimizer_drafts (
  video_id TEXT PRIMARY KEY,channel_id TEXT NOT NULL,original_title TEXT NOT NULL,
- proposed_title TEXT NOT NULL,proposed_description TEXT NOT NULL,suggested_tags_json TEXT NOT NULL,
+ proposed_title TEXT NOT NULL,alternate_title TEXT NOT NULL DEFAULT '',proposed_description TEXT NOT NULL,suggested_tags_json TEXT NOT NULL,
  thumbnail_brief TEXT NOT NULL,duration_seconds INTEGER NOT NULL,privacy TEXT NOT NULL,video_published_at TEXT,
  status TEXT NOT NULL DEFAULT 'needs_review' CHECK(status IN ('needs_review','approved','archived')),
  created_at TEXT NOT NULL DEFAULT (datetime('now')),updated_at TEXT NOT NULL DEFAULT (datetime('now'))
