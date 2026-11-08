@@ -68,3 +68,17 @@ Once a new video is detected, the next step is preparing a truthful preview from
 - This is not yet an autonomous optimizer. User upload remains manual; title/description suggestions and rights-cleared thumbnails require a truthful analysis of actual video content, followed by explicit approval before any real change.
 
 Never merge this prototype to `main` or enable edits merely because unit tests pass.
+
+## Automatic hourly discovery and editorial drafts (November 8, 2026)
+
+The separate Cloudflare Worker now has an enabled Cron Trigger `15 * * * *` (hourly, UTC) and `AUTO_DISCOVERY=YES`. It reads the verified owner channel's latest 50 videos, excludes videos shorter than 4 minutes, and creates **D1-only editorial proposals** for newly uploaded eligible videos. The first run establishes a baseline of existing IDs and **does not** generate proposals for old uploads. SQL uses atomic D1 batches to respect Cloudflare Free invocation limits.
+
+Owner-only pages after login:
+
+- `/channel/videos`: most recent long videos.
+- `/watch/status`: scheduled watcher status, last recorded scan, and optional manual read-only scan.
+- `/drafts`: queued original titles, descriptions preserving prior credits, suggested tags and thumbnail concepts.
+
+**Do not confuse this with completed full automation:** The cron is active but the first live scheduled scan still needs to be observed; no YouTube metadata or thumbnails are changed. No actual JPG/PNG thumbnail generation has been approved or deployed. Cloudflare Images' independent test did not work in this account, and no paid image plan was enabled. Titles default to original verified titles, not AI-generated clickbait; no transcript is inspected. A dedicated approved metadata writer, rights-cleared thumbnail generator, first private-video test, and safeguards for automatic writes remain pending.
+
+See `cloudflare/AUTOPILOT.md` for deployed config, costs, privacy, and follow-up acceptance checks.
