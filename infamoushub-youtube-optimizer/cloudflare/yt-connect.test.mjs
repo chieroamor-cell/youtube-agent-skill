@@ -649,3 +649,16 @@ test('already-connected channel shows long-video link right after login, never n
  assert.match(content,/Ver mis vídeos largos/);
  assert.doesNotMatch(content,/2. Conectar mi YouTube/);
 });
+
+
+test('an unauthenticated user cannot submit a draft request for any video',async()=>{
+ const env=readyEnv();
+ env.YTDB={prepare(){throw Error('Owner session must be checked before any database operation');}};
+ const r=await worker.fetch(request('/drafts/prepare',{
+  method:'POST',
+  headers:{'content-type':'application/x-www-form-urlencoded'},
+  body:new URLSearchParams({video_id:'abcdefghijk'})
+ }),env);
+ assert.equal(r.status,401);
+ assert.match(await r.text(),/Sesión caducada/);
+});
