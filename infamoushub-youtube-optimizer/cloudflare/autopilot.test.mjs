@@ -8,7 +8,7 @@ const vid=(id,title='A real history story',seconds=520)=>({id,title,seconds,
  privacy:'private',published:'2026-11-08T09:00:00Z',
  description:'The original creator explains the history using licensed footage. Credits: Original source.'});
 class MemoryDB {
- constructor(){this.watch=new Map();this.seen=new Set();this.drafts=new Map();}
+ constructor(){this.watch=new Map();this.seen=new Set();this.drafts=new Map();this.batchCalls=0;this.batchSizes=[];}
  prepare(query){
   const db=this;
   const action=(...args)=>({
@@ -41,6 +41,9 @@ class MemoryDB {
     throw Error('Unexpected run '+query);
    },
    async all(){
+    if(query.startsWith('SELECT video_id FROM optimizer_seen_videos')){
+      return {results:args.slice(1).filter(id=>db.seen.has(id)).map(video_id=>({video_id}))};
+    }
     if(query.startsWith('SELECT video_id,original_title,proposed_title,proposed_description')){
       return {results:[...db.drafts.values()].filter(x=>x.channel_id===args[0])};
     }
@@ -48,6 +51,12 @@ class MemoryDB {
    }
   });
   return {bind:(...args)=>action(...args)};
+ }
+ async batch(statements){
+  this.batchCalls++;this.batchSizes.push(statements.length);
+  const result=[];
+  for(const stmt of statements)result.push(await stmt.run());
+  return result;
  }
 }
 const testEnv=()=>({AUTO_DISCOVERY:'YES',YTDB:new MemoryDB()});
@@ -124,4 +133,28 @@ test('scheduled handler queues only safe read-only scan work',async()=>{
  // In production scan function is the authenticated YouTube reader and cannot be faked here.
  // This checks that there is a scheduled entrypoint, not actual external API writes.
  assert.equal(typeof oauthWorker.scheduled,'function');
+});
+
+
+test('a full 50-video baseline uses one atomic batch and no draft writes',async()=>{
+ const env=testEnv();
+ const ids=Array.from({length:50},(_,i)=>i.toString(36).padStart(11,'a'));
+ assert.equal(new Set(ids).size,50);
+ const result=await discoverNewLongVideos(env,feed(ids.map(id=>vid(id))));
+ assert.equal(result.status,'baseline_created');
+ assert.equal(result.baseline_seen,50);
+ assert.equal(env.YTDB.drafts.size,0);
+ assert.equal(env.YTDB.seen.size,50);
+ assert.equal(env.YTDB.batchCalls,1);
+ assert.equal(env.YTDB.batchSizes[0],51);
+});
+test('new videos are stored with their drafts in one D1 batch',async()=>{
+ const env=testEnv();
+ await discoverNewLongVideos(env,feed([vid('abcdefghijk')]));
+ const before=env.YTDB.batchCalls;
+ const response=await discoverNewLongVideos(env,feed([vid('abcdefghijk'),vid('lmnopqrstuv')]));
+ assert.equal(response.created,1);
+ assert.equal(env.YTDB.batchCalls,before+1);
+ assert.equal(env.YTDB.batchSizes.at(-1),2);
+ assert.equal(env.YTDB.drafts.size,1);
 });
