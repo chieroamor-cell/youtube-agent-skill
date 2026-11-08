@@ -34,3 +34,6 @@ jobs:
       - name: Test private rendered thumbnail output and image security
         working-directory: infamoushub-youtube-optimizer
         run: node --test cloudflare/thumbnail.test.mjs
+      - name: Test private-only video metadata writer (mocked, never live)
+        working-directory: infamoushub-youtube-optimizer
+        run: node --test cloudflare/youtube-writer.test.mjs
