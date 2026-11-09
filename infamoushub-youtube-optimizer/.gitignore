@@ -1,0 +1,10 @@
+private/
+*.jpg
+*.png
+*.jpeg
+__pycache__/
+.pytest_cache/
+*.pyc
+.env
+*oauth*.json
+*secret*.json

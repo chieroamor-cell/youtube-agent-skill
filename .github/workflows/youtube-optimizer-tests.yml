@@ -1,0 +1,42 @@
+name: YouTube optimizer safety tests
+
+on:
+  pull_request:
+    paths:
+      - 'infamoushub-youtube-optimizer/**'
+      - '.github/workflows/youtube-optimizer-tests.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  offline-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install thumbnail dependency only
+        working-directory: infamoushub-youtube-optimizer
+        run: python -m pip install -r requirements.txt
+      - name: Unit tests with mocked YouTube API (NO writes, uploads or tokens)
+        working-directory: infamoushub-youtube-optimizer
+        run: python -m unittest discover -s tests -v
+      - name: Test disabled Cloudflare OAuth connector (offline only)
+        working-directory: infamoushub-youtube-optimizer
+        run: node --test cloudflare/yt-connect.test.mjs
+      - name: Test automatic discovery, safe baseline and offline SEO drafts
+        working-directory: infamoushub-youtube-optimizer
+        run: node --test cloudflare/autopilot.test.mjs
+      - name: Test private rendered thumbnail output and image security
+        working-directory: infamoushub-youtube-optimizer
+        run: node --test cloudflare/thumbnail.test.mjs
+      - name: Test private-only video metadata writer (mocked, never live)
+        working-directory: infamoushub-youtube-optimizer
+        run: node --test cloudflare/youtube-writer.test.mjs
+      - name: Test owner-only caption extraction and fail-safe quota-bounded analysis
+        working-directory: infamoushub-youtube-optimizer
+        run: node --test cloudflare/captions.test.mjs
