@@ -361,6 +361,122 @@ async function approveDraft(request,env){
   '<p><a href="/drafts">Ver la propuesta actualizada</a></p>');
 }
 
+// One-time private owner-authorized acceptance. The ticket is a 320-bit
+// capability valid for 12 minutes, bound to exactly ONE private video ID/channel.
+// This route is deliberately disabled after acceptance and not used by cron.
+const PRIVATE_ACCEPT_VIDEO='9imSdoVAH_Q';
+const PRIVATE_ACCEPT_CHANNEL='UC7bPVW93xdIXPREbFoHXVrw';
+const ONE_TICKET_PATTERN=/^[A-Za-z0-9_-]{40,100}$/;
+async function privateOncePage(request,env){
+ if(env.ONE_SHOT_ACCEPTANCE!=='YES'||env.YOUTUBE_WRITE_ENABLED!=='NO')
+  return html('<p>Prueba privada no disponible.</p>',404);
+ const ticket=new URL(request.url).searchParams.get('ticket')||'';
+ if(!ONE_TICKET_PATTERN.test(ticket))return html('<p>Autorización inválida.</p>',403);
+ const record=await env.YTDB.prepare(
+  'SELECT video_id,channel_id,state,expires_at FROM optimizer_private_once WHERE ticket_hash=?')
+  .bind(await sha(ticket)).first();
+ if(!record||record.state!=='pending'||record.expires_at<Math.floor(Date.now()/1000)||
+   record.video_id!==PRIVATE_ACCEPT_VIDEO||record.channel_id!==PRIVATE_ACCEPT_CHANNEL)
+  return html('<p>Esta autorización privada ya caducó o fue utilizada.</p>',403);
+ const draft=await env.YTDB.prepare(
+  "SELECT video_id,original_title,alternate_title,status,selected_title,privacy,content_source,approved_at FROM optimizer_drafts WHERE video_id=? AND channel_id=?")
+  .bind(PRIVATE_ACCEPT_VIDEO,PRIVATE_ACCEPT_CHANNEL).first();
+ if(!draft||draft.status!=='approved'||draft.selected_title!=='alternate'||
+  draft.privacy!=='private'||!draft.approved_at||draft.content_source!=='caption_excerpt')
+  return html('<p>El borrador no está preparado para esta prueba.</p>',409);
+ const csrf=rnd(32);
+ return html('<h2>Prueba privada autorizada</h2><p>Vídeo: <code>'+
+  escapeHtml(PRIVATE_ACCEPT_VIDEO)+'</code>. Estado: privado.</p>'+
+  '<p>Original: '+escapeHtml(draft.original_title)+'</p>'+
+  '<p>Título SEO elegido: <strong>'+escapeHtml(draft.alternate_title)+'</strong></p>'+
+  '<p>Se guardará copia de los metadatos y se intentará cambiar SOLO título, descripción, etiquetas y miniatura. No se modifica privacidad ni Shorts.</p>'+
+  '<form method="post" action="/internal/private-once">'+csrfInput(csrf)+
+  '<input type="hidden" name="ticket" value="'+escapeHtml(ticket)+'">'+
+  '<button type="submit">Ejecutar una sola prueba autorizada</button></form>',
+  200,{'set-cookie':csrfHeader(csrf)});
+}
+async function privateOnceApply(request,env){
+ if(env.ONE_SHOT_ACCEPTANCE!=='YES'||env.YOUTUBE_WRITE_ENABLED!=='NO')
+  return html('<p>Prueba privada no disponible.</p>',404);
+ const params=await form(request);
+ const ticket=params.get('ticket')||'';
+ if(!ONE_TICKET_PATTERN.test(ticket))return html('<p>Autorización inválida.</p>',403);
+ const hash=await sha(ticket);
+ const authorized=await env.YTDB.prepare(
+  "UPDATE optimizer_private_once SET state='running',updated_at=datetime('now') WHERE ticket_hash=? AND state='pending' AND expires_at>=? AND video_id=? AND channel_id=?")
+  .bind(hash,Math.floor(Date.now()/1000),PRIVATE_ACCEPT_VIDEO,PRIVATE_ACCEPT_CHANNEL).run();
+ if(authorized?.meta?.changes!==1)
+  return html('<p>Autorización de un solo uso caducada o ya consumida. Ningún nuevo intento.</p>',409);
+ const owner=await env.YTDB.prepare("SELECT channel_id FROM oauth_channel WHERE singleton=1 AND status='active'").first();
+ const draft=await env.YTDB.prepare(
+  "SELECT d.*,c.status AS caption_status,c.transcript_excerpt AS caption_excerpt FROM optimizer_drafts d "+
+  "INNER JOIN optimizer_caption_analysis c ON c.video_id=d.video_id AND c.channel_id=d.channel_id "+
+  "WHERE d.video_id=? AND d.channel_id=?").bind(PRIVATE_ACCEPT_VIDEO,PRIVATE_ACCEPT_CHANNEL).first();
+ const eligible=owner?.channel_id===PRIVATE_ACCEPT_CHANNEL&&
+  draft?.status==='approved'&&draft?.selected_title==='alternate'&&
+  draft?.privacy==='private'&&!!draft?.approved_at&&
+  draft?.content_source==='caption_excerpt'&&draft?.caption_status==='transcript_available'&&
+  /Stephen Curry/.test(draft.alternate_title||'')&&
+  /73[\u2013\u002d]9/.test(draft.alternate_title||'')&&
+  /Steph Curry/.test(draft.caption_excerpt||'');
+ const priorAttempt=await env.YTDB.prepare(
+  'SELECT state FROM optimizer_apply_log WHERE video_id=? AND channel_id=?')
+  .bind(PRIVATE_ACCEPT_VIDEO,PRIVATE_ACCEPT_CHANNEL).first();
+ if(!eligible||priorAttempt){
+  await env.YTDB.prepare(
+   "UPDATE optimizer_private_once SET state='blocked',result_code='preflight_rejected',updated_at=datetime('now') WHERE ticket_hash=?")
+    .bind(hash).run();
+  return html('<p>La prueba se bloqueó por falta de aprobación, cambio de datos o intento anterior. No se actualizó YouTube.</p>',409);
+ }
+ const reservation=await env.YTDB.prepare(
+  "INSERT OR IGNORE INTO optimizer_apply_log(video_id,channel_id,state,result_code) VALUES (?,?,'started','one_time_authorized')")
+  .bind(PRIVATE_ACCEPT_VIDEO,PRIVATE_ACCEPT_CHANNEL).run();
+ if(reservation?.meta?.changes!==1)
+  return html('<p>Ya existe un intento. No se ejecutó una segunda prueba.</p>',409);
+ let result={status:'failed_before_write',changed:false,thumbnail_uploaded:false,verified:false};
+ try{
+  const token=await ownerToken(env,PRIVATE_ACCEPT_CHANNEL);
+  if(!token)result={status:'oauth_token_unavailable',changed:false,thumbnail_uploaded:false};
+  else{
+   const controlledEnv={...env,YOUTUBE_WRITE_ENABLED:'YES'};
+   result=await guardedPrivateUpdate({
+    env:controlledEnv,videoId:PRIVATE_ACCEPT_VIDEO,expectedChannel:PRIVATE_ACCEPT_CHANNEL,
+    draft,accessToken:token,thumbnailRenderer:renderThumbnail,
+    beforeWrite:async({video,candidate,thumbnailSize})=>{
+     // Persist original complete snippet/status before any irreversible external request.
+     if(video.id!==PRIVATE_ACCEPT_VIDEO||video.snippet?.channelId!==PRIVATE_ACCEPT_CHANNEL||
+        video.status?.privacyStatus!=='private'||thumbnailSize<5000)return false;
+     const backup=await env.YTDB.prepare(
+      "INSERT OR IGNORE INTO optimizer_video_backup(video_id,channel_id,original_snippet_json,original_status_json,candidate_snippet_json) VALUES(?,?,?,?,?)")
+      .bind(PRIVATE_ACCEPT_VIDEO,PRIVATE_ACCEPT_CHANNEL,JSON.stringify(video.snippet),
+       JSON.stringify(video.status),JSON.stringify(candidate.snippet)).run();
+     return backup?.meta?.changes===1;
+    }
+   });
+  }
+ }catch(e){result={status:'unexpected_failure',changed:false,thumbnail_uploaded:false};}
+ const state=result.status==='completed_private_test'&&result.verified?'completed':
+  result.changed?'partial':'blocked';
+ // Preserve result even when only the metadata update succeeded.
+ await env.YTDB.prepare(
+  "UPDATE optimizer_apply_log SET state=?,result_code=?,updated_at=datetime('now') WHERE video_id=? AND channel_id=?")
+  .bind(state,String(result.status).slice(0,80),PRIVATE_ACCEPT_VIDEO,PRIVATE_ACCEPT_CHANNEL).run();
+ await env.YTDB.prepare(
+  "UPDATE optimizer_private_once SET state=?,result_code=?,updated_at=datetime('now') WHERE ticket_hash=?")
+  .bind(state==='completed'?'completed':'failed',String(result.status).slice(0,80),hash).run();
+ if(state==='completed')await env.YTDB.prepare(
+  "UPDATE optimizer_drafts SET status='archived',updated_at=datetime('now') WHERE video_id=? AND channel_id=? AND status='approved'")
+  .bind(PRIVATE_ACCEPT_VIDEO,PRIVATE_ACCEPT_CHANNEL).run();
+ return html('<h2>Resultado de la primera prueba privada</h2>'+
+  '<p>Vídeo: <code>'+PRIVATE_ACCEPT_VIDEO+'</code></p>'+
+  '<p>Estado: <strong>'+escapeHtml(result.status)+'</strong></p>'+
+  '<p>Metadatos enviados: '+(result.changed?'sí':'no')+'</p>'+
+  '<p>Miniatura subida: '+(result.thumbnail_uploaded?'sí':'no')+'</p>'+
+  '<p>Comprobación de lectura final: '+(result.verified?'confirmada':'sin confirmar')+'</p>'+
+  '<p>La privacidad no se incluyó en ninguna solicitud de actualización; se exigió que el vídeo continuara privado.</p>'+
+  '<p>La autorización fue consumida: no puede ejecutarse otra vez.</p>');
+}
+
 async function ownerToken(env,channelId){
  const connected=await env.YTDB.prepare("SELECT channel_id,token_iv,token_ct FROM oauth_channel WHERE singleton=1 AND status='active'").first();
  if(!connected||connected.channel_id!==channelId)return null;
@@ -639,6 +755,8 @@ export default {
    const u=new URL(request.url);
    if(u.origin!==new URL(REDIRECT).origin)return json({error:'wrong_origin'},421);
    if(u.pathname==='/health'&&request.method==='GET')return json({service:'infamoushub-youtube-connect',oauth_configured:!!ready(env),edits_enabled:false,uploads_enabled:false,publication_enabled:false});
+   if(u.pathname==='/internal/private-once'&&request.method==='GET')return await privateOncePage(request,env);
+   if(u.pathname==='/internal/private-once'&&request.method==='POST')return await privateOnceApply(request,env);
    if(u.pathname==='/health/storage'&&request.method==='GET'){
     // Safe read-only internal storage availability check; never report identities, counts or tokens.
     if(!env.YTDB)return json({available:false},503);
