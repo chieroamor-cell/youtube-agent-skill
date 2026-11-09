@@ -2,6 +2,7 @@
 import {discoverNewLongVideos,getDrafts,prepareExistingLongVideo} from './autopilot.mjs';
 import {renderThumbnail} from './thumbnail.mjs';
 import {guardedPrivateUpdate} from './youtube-writer.mjs';
+import {inspectNextVideoCaptions} from './captions.mjs';
 const REDIRECT='https://infamoushub-youtube-connect.infamoushub-yt-29bea3.workers.dev/oauth/callback';
 const SCOPE='https://www.googleapis.com/auth/youtube.force-ssl';
 const encoder=new TextEncoder();
@@ -231,6 +232,35 @@ function safeDraftTags(raw){
   return Array.isArray(tags)?tags.filter(t=>typeof t==='string').slice(0,12).join(', '):'';
  }catch(e){return '';}
 }
+// Protected summary of caption evidence. Never serves tokens or complete private captions publicly.
+async function captionAnalysisDashboard(request,env){
+ if(!ready(env))return html('<p>Conexión no disponible.</p>',503);
+ if(!await adminSession(request,env))return html(nav('<p>Inicia sesión para revisar subtítulos.</p>'),401);
+ const owner=await env.YTDB.prepare("SELECT channel_id FROM oauth_channel WHERE singleton=1 AND status='active'").first();
+ if(!owner?.channel_id)return html(nav('<p>No hay canal conectado.</p>'),503);
+ const r=await env.YTDB.prepare(
+  "SELECT c.video_id,c.status,c.language,c.track_kind,c.excerpt_words,substr(c.transcript_excerpt,1,1000) AS excerpt,c.attempts,c.last_checked_at,v.title,v.privacy "+
+  "FROM optimizer_caption_analysis c INNER JOIN optimizer_video_inventory v ON v.video_id=c.video_id AND v.channel_id=c.channel_id "+
+  "WHERE c.channel_id=? ORDER BY c.last_checked_at DESC LIMIT 10")
+  .bind(owner.channel_id).all();
+ const items=(r.results||[]).map(x=>'<section style="padding:12px 0;border-bottom:1px solid #aaa">'+
+  '<h3>'+escapeHtml(x.title||x.video_id)+'</h3>'+
+  '<p>Estado de subtítulos: '+escapeHtml(x.status)+' · idioma: '+escapeHtml(x.language||'desconocido')+
+  ' · privacidad: '+escapeHtml(x.privacy)+'</p>'+
+  '<p>Última revisión UTC: '+escapeHtml(x.last_checked_at||'')+
+  ' · intentos: '+Number(x.attempts||0)+'</p>'+
+  (x.status==='transcript_available'?
+   '<p><strong>Extracto real de subtítulos (requiere verificar exactitud):</strong></p>'+
+   '<p style="white-space:pre-wrap">'+escapeHtml(x.excerpt||'')+'</p>':
+   '<p>No hay transcripción utilizable; no debe inventarse una descripción.</p>')+'</section>').join('');
+ return html('<h2>Análisis del contenido del canal</h2>'+
+  '<p>Inspección automática: '+(env.CAPTION_INSPECTION==='YES'?'activada':'desactivada')+
+  '. Una revisión privada se realiza como máximo para un vídeo pendiente en cada ejecución, con reintentos limitados cada 72 horas.</p>'+
+  '<p>El análisis no cambia vídeos ni genera afirmaciones inventadas.</p>'+
+  (items||'<p>La primera comprobación de subtítulos aún no tiene resultados registrados.</p>')+
+  '<p><a href="/drafts">Propuestas SEO</a> · <a href="/connect">Volver al panel</a></p>');
+}
+
 // Private preview queue: drafts only, never an API write to YouTube.
 async function draftDashboard(request,env){
  if(!ready(env))return html('<p>Conexión no disponible.</p>',503);
@@ -564,7 +594,12 @@ export default {
  async scheduled(event,env,ctx){
   // Cron only discovers videos and stores editorial drafts, NEVER edits or publishes.
   if(env.AUTO_DISCOVERY!=='YES')return;
-  const work=discoverNewLongVideos(env,listOwnerUploads).catch(()=>({status:'failed_safely'}));
+  const work=(async()=>{
+   await discoverNewLongVideos(env,listOwnerUploads);
+   // No user-facing video changes. Caption reading uses a small bounded share of
+   // the official YouTube API quota and persists one private excerpt if available.
+   if(env.CAPTION_INSPECTION==='YES')await inspectNextVideoCaptions(env,ownerToken);
+  })().catch(()=>({status:'failed_safely'}));
   if(ctx?.waitUntil)ctx.waitUntil(work);else await work;
  },
  async fetch(request,env){
@@ -593,6 +628,7 @@ export default {
      '<p><a href="/channel/verify">Verificar el canal (solo lectura)</a></p>'+
      '<p><a href="/channel/videos">Ver mis vídeos largos (solo lectura)</a></p>'+
      '<p><a href="/watch/status">Detector automático</a> · <a href="/drafts">Propuestas SEO</a></p>'+
+     '<p><a href="/analysis/status">Análisis de subtítulos del vídeo</a></p>'+
      connectForm+
      '<form method="post" action="/session/logout">'+csrfInput(csrf)+'<button type="submit">Cerrar sesión</button></form>':
      '<p>Primero entra con tu contraseña de administración. Después aparecerá el panel de YouTube.</p>'+
@@ -609,6 +645,7 @@ export default {
    if(u.pathname==='/drafts/apply'&&request.method==='POST')return await applyPrivateDraft(request,env);
    if(u.pathname==='/drafts/prepare'&&request.method==='POST')return await prepareDraftManually(request,env);
    if(u.pathname==='/watch/status'&&request.method==='GET')return await watchStatus(request,env);
+   if(u.pathname==='/analysis/status'&&request.method==='GET')return await captionAnalysisDashboard(request,env);
    if(u.pathname==='/watch/scan'&&request.method==='POST')return await manualScan(request,env);
    if(u.pathname==='/session/login'&&request.method==='POST')return await login(request,env);
    if(u.pathname==='/session/logout'&&request.method==='POST')return await logout(request,env);
