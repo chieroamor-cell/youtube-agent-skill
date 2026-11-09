@@ -43,13 +43,18 @@ test('default and unapproved requests make ZERO external API calls',async()=>{
 test('full private-only test update with JPEG is gated and uses official Google API only',async()=>{
  const d=draft();d.status='approved';
  const urls=[],fakeJpeg=new Uint8Array(8000);fakeJpeg[0]=255;fakeJpeg[1]=216;
+ let savedSnippet=null,backupCalls=0;
  const fetchFn=async(url,options)=>{
   urls.push([String(url),options.method,options.redirect]);
   if(options.method==='GET'&&String(url).includes('/channels?'))return Response.json({items:[{id:owner}]});
-  if(options.method==='GET'&&String(url).includes('/videos?'))return Response.json({items:[video()]});
+  if(options.method==='GET'&&String(url).includes('/videos?')){
+   const current=video();if(savedSnippet)current.snippet={...current.snippet,...savedSnippet};
+   return Response.json({items:[current]});
+  }
   if(options.method==='PUT'){
    assert.match(url,/^https:\/\/www\.googleapis\.com\/youtube\/v3\/videos\?/);
    assert.equal(JSON.parse(options.body).snippet.title,video().snippet.title);
+   savedSnippet=JSON.parse(options.body).snippet;
    return Response.json({id});
   }
   if(options.method==='POST'){
@@ -60,9 +65,11 @@ test('full private-only test update with JPEG is gated and uses official Google 
   throw Error('Unexpected API request');
  };
  const x=await guardedPrivateUpdate({env:{YOUTUBE_WRITE_ENABLED:'YES'},videoId:id,expectedChannel:owner,
-  draft:d,accessToken:'a'.repeat(30),fetchFn,thumbnailRenderer:async()=>({ok:true,bytes:fakeJpeg})});
+  draft:d,accessToken:'a'.repeat(30),fetchFn,thumbnailRenderer:async()=>({ok:true,bytes:fakeJpeg}),
+  beforeWrite:async({video:v,candidate})=>{backupCalls++;assert.equal(v.id,id);assert.equal(candidate.id,id);return true;}});
  assert.equal(x.status,'completed_private_test');assert.equal(x.changed,true);
- assert.equal(x.thumbnail_uploaded,true);assert.equal(urls.length,4);
+ assert.equal(x.thumbnail_uploaded,true);assert.equal(x.verified,true);assert.equal(urls.length,5);
+ assert.equal(backupCalls,1);
  assert.ok(urls.every(row=>row[2]==='manual'));
 });
 test('rendering failure prevents any metadata write',async()=>{
@@ -75,4 +82,34 @@ test('rendering failure prevents any metadata write',async()=>{
  const x=await guardedPrivateUpdate({env:{YOUTUBE_WRITE_ENABLED:'YES'},videoId:id,expectedChannel:owner,
   draft:d,accessToken:'b'.repeat(30),fetchFn,thumbnailRenderer:async()=>({ok:false,reason:'free_quota'})});
  assert.equal(x.status,'thumbnail_free_quota');assert.equal(writes,0);
+});
+
+test('failed D1 backup prevents BOTH metadata and thumbnail writes',async()=>{
+ const d=draft();d.status='approved';const bytes=new Uint8Array(9000);bytes[0]=255;bytes[1]=216;
+ let writes=0;
+ const fetchFn=async(url,o)=>{
+  if(o.method!=='GET')writes++;
+  if(url.includes('/channels?'))return Response.json({items:[{id:owner}]});
+  return Response.json({items:[video()]});
+ };
+ const x=await guardedPrivateUpdate({env:{YOUTUBE_WRITE_ENABLED:'YES'},videoId:id,expectedChannel:owner,
+  draft:d,accessToken:'a'.repeat(20),fetchFn,
+  thumbnailRenderer:async()=>({ok:true,bytes}),beforeWrite:async()=>false});
+ assert.equal(x.status,'backup_rejected');assert.equal(writes,0);
+});
+test('readback mismatch after thumbnail must be reported as unverified partial update',async()=>{
+ const d=draft();d.status='approved';d.selected_title='alternate';
+ const bytes=new Uint8Array(9000);bytes[0]=255;bytes[1]=216;
+ let writes=0;
+ const fetchFn=async(url,o)=>{
+  if(o.method==='PUT'){writes++;return Response.json({id});}
+  if(o.method==='POST'){writes++;return Response.json({items:[{}]});}
+  if(url.includes('/channels?'))return Response.json({items:[{id:owner}]});
+  return Response.json({items:[video()]}); // remains old after supposed update
+ };
+ const x=await guardedPrivateUpdate({env:{YOUTUBE_WRITE_ENABLED:'YES'},videoId:id,expectedChannel:owner,
+  draft:d,accessToken:'a'.repeat(20),fetchFn,
+  thumbnailRenderer:async()=>({ok:true,bytes}),beforeWrite:async()=>true});
+ assert.equal(x.status,'post_write_mismatch');assert.equal(x.verified,false);
+ assert.equal(x.changed,true);assert.equal(writes,2);
 });
