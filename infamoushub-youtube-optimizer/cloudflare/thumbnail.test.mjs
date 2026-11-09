@@ -39,3 +39,28 @@ test('browser failures never serve content',async()=>{
  assert.deepEqual(await renderThumbnail({BROWSER:{quickAction:async()=>{throw Error('PRIVATE data');}}},draft),{ok:false,reason:'render_failed'});
  assert.deepEqual(await renderThumbnail({BROWSER:{quickAction:async()=>new Response('invalid',{headers:{'content-type':'text/plain'}})}},draft),{ok:false,reason:'invalid_browser_response'});
 });
+
+
+test('uses a factual transcript-backed basketball headline instead of a date-only title',()=>{
+ const caption={...draft,original_title:'8. November 2026',
+  thumbnail_headline:'STEPH CURRY: 73–9 SEASON',
+  content_source:'caption_excerpt',caption_status:'transcript_available',
+  caption_excerpt:'Steph Curry led the Warriors to a 73-9 season. This basketball documentary follows Curry and the team.'};
+ assert.equal(safeThumbnailTitle(caption),'STEPH CURRY: 73–9 SEASON');
+ const markup=makeThumbnailHTML(caption);
+ assert.match(markup,/STEPH CURRY: 73–9 SEASON/);
+ assert.match(markup,/class="basketball"/);
+ assert.doesNotMatch(markup,/8\. November 2026/);
+});
+test('does not display ungrounded claims when captions are absent or disagree',()=>{
+ const original='8. November 2026';
+ const bad={...draft,original_title:original,thumbnail_headline:'STEPH CURRY: 73–9 SEASON',
+  content_source:'caption_excerpt',caption_status:'transcript_available',
+  caption_excerpt:'A video about a different topic entirely.'};
+ assert.equal(safeThumbnailTitle(bad),original);
+ assert.doesNotMatch(makeThumbnailHTML(bad),/class="basketball"/);
+ const noCaption={...bad,caption_status:null};
+ assert.equal(safeThumbnailTitle(noCaption),original);
+ const untrusted={...bad,caption_excerpt:'Steph Curry 73-9 basketball season',thumbnail_headline:'<script>alert(1)</script>'};
+ assert.equal(safeThumbnailTitle(untrusted),original);
+});
