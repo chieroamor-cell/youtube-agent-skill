@@ -304,13 +304,14 @@ async function draftDashboard(request,env){
    '<input type="hidden" name="video_id" value="'+escapeHtml(d.video_id)+'">'+
    '<label><input type="checkbox" name="confirm_private" value="YES" required> Aplicar al vídeo privado (título, descripción y miniatura JPEG)</label>'+
    '<p><button type="submit">Aplicar cambios al vídeo privado</button></p></form>':'')+
-  (d.privacy==='private'&&d.status==='needs_review'?
+  (d.privacy==='private'&&['needs_review','approved'].includes(d.status)?
    '<form method="post" action="/drafts/approve">'+csrfInput(csrf)+
    '<input type="hidden" name="video_id" value="'+escapeHtml(d.video_id)+'">'+
-   '<p><label><input type="radio" name="title_choice" value="original" checked> Conservar título original</label></p>'+
-   '<p><label><input type="radio" name="title_choice" value="alternate"> Usar título alternativo después de revisión</label></p>'+
+   (d.status==='approved'?'<p><strong>Elección aprobada actualmente: '+escapeHtml(d.selected_title==='alternate'?'título alternativo':'título original')+'</strong></p>':'')+
+   '<p><label><input type="radio" name="title_choice" value="original"'+(d.selected_title!=='alternate'?' checked':'')+'> Conservar título original</label></p>'+
+   '<p><label><input type="radio" name="title_choice" value="alternate"'+(d.selected_title==='alternate'?' checked':'')+'> Usar título alternativo después de revisión</label></p>'+
    '<label><input name="reviewed" type="checkbox" required> Confirmo que revisé el contenido, las etiquetas y los derechos de la miniatura.</label>'+
-   '<p><button type="submit">Aprobar borrador para prueba privada</button></p></form>':'')+'</article>').join('');
+   '<p><button type="submit">'+(d.status==='approved'?'Cambiar título aprobado (solo borrador)':'Aprobar borrador para prueba privada')+'</button></p></form>':'')+'</article>').join('');
  return html('<h2>Propuestas SEO automáticas</h2>'+
    '<p>Estas propuestas se crean cuando el detector ve una nueva subida larga. Ninguna se ha aplicado a YouTube.</p>'+
    (records||'<p>Aún no hay propuestas. El primer escaneo establece una referencia de los vídeos existentes para no editarlos por error.</p>')+
@@ -327,25 +328,37 @@ async function approveDraft(request,env){
   return html(nav('<p>Faltan datos de aprobación o confirmación editorial.</p>'),400);
  const owner=await env.YTDB.prepare("SELECT channel_id FROM oauth_channel WHERE singleton=1 AND status='active'").first();
  if(!owner?.channel_id)return html(nav('<p>Canal sin autorizar.</p>'),503);
- const draft=await env.YTDB.prepare('SELECT video_id,original_title,alternate_title,privacy,status FROM optimizer_drafts WHERE video_id=? AND channel_id=?')
+ const draft=await env.YTDB.prepare('SELECT video_id,original_title,alternate_title,selected_title,privacy,status FROM optimizer_drafts WHERE video_id=? AND channel_id=?')
   .bind(videoId,owner.channel_id).first();
- if(!draft||draft.status!=='needs_review'||draft.privacy!=='private')
-  return html(nav('<p>Solo pueden aprobarse propuestas pendientes de vídeos privados.</p>'),409);
+ if(!draft||!['needs_review','approved'].includes(draft.status)||draft.privacy!=='private')
+  return html(nav('<p>Solo pueden revisarse propuestas de vídeos privados sin aplicar.</p>'),409);
  if(selection==='alternate'&&(!(draft.alternate_title||'').trim()||(draft.alternate_title||'').length>100))
   return html(nav('<p>El título alternativo no es válido.</p>'),400);
+ // A previously approved choice cannot be amended after any write attempt.
+ const attempt=await env.YTDB.prepare('SELECT state FROM optimizer_apply_log WHERE video_id=? AND channel_id=?')
+  .bind(videoId,owner.channel_id).first();
+ if(attempt)return html(nav('<p>Hay un intento de actualización registrado. No se puede modificar la aprobación.</p>'),409);
  let response;
  try{response=await listOwnerUploads(env);}catch(e){return html(nav('<p>La comprobación de YouTube falló. No se aprobó el borrador.</p>'),503);}
  const actual=response.ok&&response.channel_id===owner.channel_id&&
   response.long_videos.find(v=>v.id===videoId&&v.privacy==='private'&&v.title===draft.original_title);
  if(!actual)return html(nav('<p>El vídeo ya no coincide con la propuesta o no es privado. Revisión requerida.</p>'),409);
- const result=await env.YTDB.prepare(
-  "UPDATE optimizer_drafts SET status='approved',selected_title=?,approved_at=datetime('now'),updated_at=datetime('now') WHERE video_id=? AND channel_id=? AND status='needs_review'")
-  .bind(selection,videoId,owner.channel_id).run();
- if(result?.meta?.changes!==1)return html(nav('<p>La propuesta ya había sido revisada. No se realizó ninguna modificación.</p>'),409);
- return html('<h2>Borrador aprobado para prueba</h2><p>Vídeo: '+escapeHtml(videoId)+
-  ' · Título elegido: '+escapeHtml(selection)+'</p>'+
-  '<p><strong>Ningún cambio se ha aplicado a YouTube.</strong> La escritura sigue bloqueada hasta probarla con un vídeo privado.</p>'+
+ const alreadyApproved=draft.status==='approved';
+ if(alreadyApproved&&draft.selected_title===selection)return html(
+  '<h2>El título ya está seleccionado</h2>'+
+  '<p>Se conserva el título '+escapeHtml(selection==='alternate'?'alternativo':'original')+'. No se ha modificado YouTube.</p>'+
   '<p><a href="/drafts">Volver a propuestas SEO</a></p>');
+ // The final SQL condition is an atomic replay check: no edits if an apply log
+ // was created between reading the draft and updating its owner review.
+ const sql=alreadyApproved?
+  "UPDATE optimizer_drafts SET selected_title=?,approved_at=datetime('now'),updated_at=datetime('now') WHERE video_id=? AND channel_id=? AND status='approved' AND privacy='private' AND NOT EXISTS (SELECT 1 FROM optimizer_apply_log a WHERE a.video_id=optimizer_drafts.video_id AND a.channel_id=optimizer_drafts.channel_id)":
+  "UPDATE optimizer_drafts SET status='approved',selected_title=?,approved_at=datetime('now'),updated_at=datetime('now') WHERE video_id=? AND channel_id=? AND status='needs_review' AND privacy='private' AND NOT EXISTS (SELECT 1 FROM optimizer_apply_log a WHERE a.video_id=optimizer_drafts.video_id AND a.channel_id=optimizer_drafts.channel_id)";
+ const result=await env.YTDB.prepare(sql).bind(selection,videoId,owner.channel_id).run();
+ if(result?.meta?.changes!==1)return html(nav('<p>La aprobación cambió durante la revisión o ya existe un intento de actualización. No se modificó nada.</p>'),409);
+ return html('<h2>'+(alreadyApproved?'Elección de título corregida':'Borrador aprobado para prueba')+'</h2>'+
+  '<p>Vídeo: '+escapeHtml(videoId)+' · Título elegido: '+escapeHtml(selection)+'</p>'+
+  '<p><strong>Solamente se guardó la elección en el borrador.</strong> YouTube permanece sin cambios y la escritura sigue bloqueada.</p>'+
+  '<p><a href="/drafts">Ver la propuesta actualizada</a></p>');
 }
 
 async function ownerToken(env,channelId){
