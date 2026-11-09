@@ -682,7 +682,7 @@ test('thumbnail preview is owner-bound and cannot use a different channels video
    return {bind(){return {first:async()=>({expires_at:Math.floor(Date.now()/1000)+300})}}};
   if(sql.startsWith('SELECT channel_id FROM oauth_channel'))
    return {first:async()=>({channel_id:owner})};
-  if(sql.startsWith('SELECT video_id,channel_id,original_title,thumbnail_brief,status FROM optimizer_drafts'))
+  if(sql.startsWith('SELECT d.video_id,d.channel_id,d.original_title,d.thumbnail_brief,d.thumbnail_headline,d.content_source,d.status,c.status AS caption_status'))
    return {bind(id,own){assert.equal(id,'abcdefghijk');assert.equal(own,owner);return {first:async()=>null}}};
   throw Error('Unrecognized SQL '+sql);
  }};
@@ -723,7 +723,7 @@ test('signed-in thumbnail endpoint streams a real JPEG only from an owner draft'
    return {bind(){return {first:async()=>({expires_at:Math.floor(Date.now()/1000)+300})}}};
   if(sql.startsWith('SELECT channel_id FROM oauth_channel'))
    return {first:async()=>({channel_id:owner})};
-  if(sql.startsWith('SELECT video_id,channel_id,original_title,thumbnail_brief,status FROM optimizer_drafts'))
+  if(sql.startsWith('SELECT d.video_id,d.channel_id,d.original_title,d.thumbnail_brief,d.thumbnail_headline,d.content_source,d.status,c.status AS caption_status'))
    return {bind(vid,ch){assert.equal(vid,id);assert.equal(ch,owner);return {first:async()=>({video_id:id,channel_id:owner,original_title:'A Real Story About Games',status:'needs_review'})}}};
   throw Error('Unrecognized SQL '+sql);
  }};
