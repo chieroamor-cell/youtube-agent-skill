@@ -710,7 +710,7 @@ test('reviewed private video changes cannot be applied until a separate writer f
  }),env);
  assert.equal(r.status,403);
  const txt=await r.text();
- assert.match(txt,/escritura en YouTube sigue desactivada/);
+ assert.match(txt,/Prueba privada de un solo vídeo no habilitada/);
  assert.doesNotMatch(txt,/access_token|client_secret/);
 });
 
@@ -906,4 +906,28 @@ test('one-time private acceptance refuses malformed tickets and never looks up O
  env.YTDB={prepare(){throw Error('Invalid ticket must not touch database');}};
  const g=await worker.fetch(request('/internal/private-once?ticket=short'),env);
  assert.equal(g.status,403);
+});
+
+
+test('one-time private writer refuses every video other than exact approved owner target',async()=>{
+ const {env,sessionCookie,csrf,csrfCookie}=await loggedIn();
+ env.PRIVATE_TEST_ENABLED='YES';env.YOUTUBE_WRITE_ENABLED='NO';
+ const no=await worker.fetch(request('/drafts/apply',{
+  method:'POST',headers:{'content-type':'application/x-www-form-urlencoded','origin':'null',
+   cookie:sessionCookie+'; '+csrfCookie},
+  body:new URLSearchParams({video_id:'abcdefghijk',confirm_private:'YES',csrf})
+ }),env);
+ assert.equal(no.status,400);
+ assert.match(await no.text(),/Falta la aprobación del vídeo privado/);
+});
+test('global YouTube write flag is never enough to enable the private one-video route',async()=>{
+ const {env,sessionCookie,csrf,csrfCookie}=await loggedIn();
+ env.PRIVATE_TEST_ENABLED='YES';env.YOUTUBE_WRITE_ENABLED='YES';
+ const no=await worker.fetch(request('/drafts/apply',{
+  method:'POST',headers:{'content-type':'application/x-www-form-urlencoded','origin':'null',
+   cookie:sessionCookie+'; '+csrfCookie},
+  body:new URLSearchParams({video_id:'9imSdoVAH_Q',confirm_private:'YES',csrf})
+ }),env);
+ assert.equal(no.status,403);
+ assert.match(await no.text(),/no habilitada/);
 });
