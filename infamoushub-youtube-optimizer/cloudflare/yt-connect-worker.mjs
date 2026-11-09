@@ -299,11 +299,12 @@ async function draftDashboard(request,env){
   '<p>Diseño original de InfamousHub basado solo en el título verificado. No se han analizado fotogramas; revisa la imagen antes de subirla.</p>'+
   '<p><strong>Instrucciones de diseño:</strong> '+escapeHtml(d.thumbnail_brief)+'</p>'+
   '<p>Estado: '+escapeHtml(d.status)+' · privacidad original: '+escapeHtml(d.privacy)+'</p>'+
-  (env.YOUTUBE_WRITE_ENABLED==='YES'&&d.status==='approved'&&d.privacy==='private'?
+  (env.PRIVATE_TEST_ENABLED==='YES'&&env.YOUTUBE_WRITE_ENABLED==='NO'&&
+   d.video_id==='9imSdoVAH_Q'&&d.status==='approved'&&d.selected_title==='alternate'&&d.privacy==='private'?
    '<form method="post" action="/drafts/apply">'+csrfInput(csrf)+
    '<input type="hidden" name="video_id" value="'+escapeHtml(d.video_id)+'">'+
-   '<label><input type="checkbox" name="confirm_private" value="YES" required> Aplicar al vídeo privado (título, descripción y miniatura JPEG)</label>'+
-   '<p><button type="submit">Aplicar cambios al vídeo privado</button></p></form>':'')+
+   '<label><input type="checkbox" name="confirm_private" value="YES" required> Autorizo la primera actualización real de ESTE vídeo privado, con su título SEO, descripción, etiquetas y miniatura. Mantenerlo privado.</label>'+
+   '<p><button type="submit">Aplicar ahora al vídeo privado (una sola vez)</button></p></form>':'')+
   (d.privacy==='private'&&['needs_review','approved'].includes(d.status)?
    '<form method="post" action="/drafts/approve">'+csrfInput(csrf)+
    '<input type="hidden" name="video_id" value="'+escapeHtml(d.video_id)+'">'+
@@ -380,16 +381,24 @@ async function applyPrivateDraft(request,env){
  if(!ready(env))return html('<p>Conexión no disponible.</p>',503);
  if(!await adminSession(request,env))return html(nav('<p>Sesión caducada. Entra antes de aplicar un cambio.</p>'),401);
  const input=await form(request);
- if(env.YOUTUBE_WRITE_ENABLED!=='YES')return html(nav('<p>La escritura en YouTube sigue desactivada. No se modificó ningún vídeo.</p>'),403);
+ // Only this owner's already-approved private acceptance can temporarily use
+ // a request-local override; the deployed global write flag remains OFF.
+ if(env.PRIVATE_TEST_ENABLED!=='YES'||env.YOUTUBE_WRITE_ENABLED!=='NO')
+  return html(nav('<p>Prueba privada de un solo vídeo no habilitada. No se ha cambiado YouTube.</p>'),403);
  const id=input.get('video_id')||'';
- if(input.get('confirm_private')!=='YES'||!/^[A-Za-z0-9_-]{11}$/.test(id))
+ if(input.get('confirm_private')!=='YES'||id!=='9imSdoVAH_Q')
   return html(nav('<p>Falta la aprobación del vídeo privado.</p>'),400);
  const owner=await env.YTDB.prepare("SELECT channel_id FROM oauth_channel WHERE singleton=1 AND status='active'").first();
- if(!owner||!/^UC[A-Za-z0-9_-]{10,}$/.test(owner.channel_id||''))
+ if(!owner||owner.channel_id!=='UC7bPVW93xdIXPREbFoHXVrw')
   return html(nav('<p>Canal no válido.</p>'),503);
  const d=await env.YTDB.prepare("SELECT d.*,c.status AS caption_status,c.transcript_excerpt AS caption_excerpt FROM optimizer_drafts d "+
   "LEFT JOIN optimizer_caption_analysis c ON c.video_id=d.video_id AND c.channel_id=d.channel_id WHERE d.video_id=? AND d.channel_id=?").bind(id,owner.channel_id).first();
- if(!d||d.status!=='approved'||d.privacy!=='private'||!d.approved_at)
+ if(!d||d.status!=='approved'||d.privacy!=='private'||!d.approved_at||
+    d.selected_title!=='alternate'||d.content_source!=='caption_excerpt'||
+    d.caption_status!=='transcript_available'||
+    !/Stephen Curry/.test(d.alternate_title||'')||
+    !/73[\u2013\u002d]9/.test(d.alternate_title||'')||
+    !/Steph Curry/.test(d.caption_excerpt||''))
   return html(nav('<p>Solo puedes aplicar un borrador aprobado de un vídeo privado.</p>'),409);
  const lock=await env.YTDB.prepare(
   "INSERT OR IGNORE INTO optimizer_apply_log(video_id,channel_id,state) VALUES (?,?,'started')")
@@ -401,11 +410,23 @@ async function applyPrivateDraft(request,env){
   const access=await ownerToken(env,owner.channel_id);
   if(!access)result={status:'google_token_unavailable',changed:false,thumbnail_uploaded:false};
   else result=await guardedPrivateUpdate({
-   env,videoId:id,expectedChannel:owner.channel_id,draft:d,accessToken:access,
-   thumbnailRenderer:renderThumbnail
+   // The ONLY write-enabling value exists in this authenticated, allowlisted
+   // request context. The Cloudflare Worker setting stays NO.
+   env:{...env,YOUTUBE_WRITE_ENABLED:'YES'},
+   videoId:id,expectedChannel:owner.channel_id,draft:d,accessToken:access,
+   thumbnailRenderer:renderThumbnail,
+   beforeWrite:async({video,candidate,thumbnailSize})=>{
+    if(video.id!==id||video.snippet?.channelId!==owner.channel_id||
+       video.status?.privacyStatus!=='private'||thumbnailSize<5000)return false;
+    const saved=await env.YTDB.prepare(
+     "INSERT OR IGNORE INTO optimizer_video_backup(video_id,channel_id,original_snippet_json,original_status_json,candidate_snippet_json) VALUES(?,?,?,?,?)")
+     .bind(id,owner.channel_id,JSON.stringify(video.snippet),
+      JSON.stringify(video.status),JSON.stringify(candidate.snippet)).run();
+    return saved?.meta?.changes===1;
+   }
   });
  }catch(e){result={status:'unexpected_error',changed:false,thumbnail_uploaded:false};}
- const state=result.status==='completed_private_test'?'completed':result.changed?'partial':'blocked';
+ const state=result.status==='completed_private_test'&&result.verified===true?'completed':result.changed?'partial':'blocked';
  await env.YTDB.prepare(
   "UPDATE optimizer_apply_log SET state=?,result_code=?,updated_at=datetime('now') WHERE video_id=? AND channel_id=?")
   .bind(state,String(result.status).slice(0,80),id,owner.channel_id).run();
