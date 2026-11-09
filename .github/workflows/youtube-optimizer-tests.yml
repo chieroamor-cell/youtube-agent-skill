@@ -37,3 +37,6 @@ jobs:
       - name: Test private-only video metadata writer (mocked, never live)
         working-directory: infamoushub-youtube-optimizer
         run: node --test cloudflare/youtube-writer.test.mjs
+      - name: Test owner-only caption extraction and fail-safe quota-bounded analysis
+        working-directory: infamoushub-youtube-optimizer
+        run: node --test cloudflare/captions.test.mjs
