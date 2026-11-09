@@ -5,6 +5,19 @@ const esc=s=>String(s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&
 export function safeThumbnailTitle(draft){
  const original=String(draft?.original_title||'').replace(/\s+/g,' ').trim();
  if(original.length<3||original.length>110)throw Error('invalid_title');
+ // A topic-specific headline is allowed only when ALL significant tokens
+ // occur in the private transcript evidence for the exact same video.
+ const headline=String(draft?.thumbnail_headline||'').replace(/\s+/g,' ').trim();
+ if(draft?.content_source==='caption_excerpt'&&
+    draft?.caption_status==='transcript_available'&&
+    headline.length>=8&&headline.length<=62&&
+    /^[\p{L}\p{N}\p{P}\p{Zs}]+$/u.test(headline)){
+   const tokens=text=>String(text).normalize('NFKD').replace(/[\u0300-\u036f]/g,'')
+    .toLowerCase().match(/[a-z0-9]+/g)||[];
+   const captionTokens=new Set(tokens(draft.caption_excerpt||''));
+   const required=[...new Set(tokens(headline).filter(t=>t.length>=3||/^\d+$/.test(t)))];
+   if(required.length>=3&&required.every(t=>captionTokens.has(t)))return headline;
+ }
  let display='';
  for(const word of original.split(' ')){
   if((display+' '+word).trim().length>72)break;
@@ -21,6 +34,9 @@ const CSS='*{box-sizing:border-box}html,body{padding:0;margin:0;width:1280px;hei
  '.ring:after{content:"";position:absolute;inset:67px;border:7px solid #fff;border-radius:50%;opacity:.38}'+
  '.accent{position:absolute;right:-22px;bottom:68px;width:600px;height:74px;transform:rotate(-20deg);background:#ff3a70;box-shadow:0 0 90px #c9155e;opacity:.84}'+
  '.crest{position:absolute;right:162px;top:245px;font-size:130px;font-weight:900;letter-spacing:-16px;color:#fff;text-shadow:0 4px 40px #041522;opacity:.62}'+
+ '.basketball{position:absolute;right:128px;top:168px;width:310px;height:310px;border-radius:50%;opacity:.88;background:radial-gradient(circle at 31% 23%,#ffd38a 0%,#fa9d3f 26%,#cf6122 68%,#7a2a19 100%);border:9px solid #201824;box-shadow:0 14px 75px #e5744599,16px 24px 60px #030812aa}'+
+ '.basketball:before{content:"";position:absolute;inset:0;border-radius:50%;border-left:12px solid #281826;border-right:12px solid #281826;transform:scaleX(.5)}'+
+ '.basketball:after{content:"";position:absolute;top:48%;left:-1%;width:102%;height:13px;background:#281826;transform:rotate(-17deg)}'+
  '.left{position:absolute;z-index:5;left:65px;top:48px;width:830px;height:620px;display:flex;flex-direction:column}'+
  '.tag{display:inline-block;width:max-content;font-size:26px;font-weight:900;letter-spacing:6px;color:#6be2ff;padding:8px 13px;border-left:7px solid #f43f8c}'+
  '.title{width:820px;max-height:365px;overflow:hidden;line-height:.99;letter-spacing:-3px;text-transform:uppercase;font-size:75px;font-weight:900;text-shadow:0 5px 22px #0008;margin:auto 0;text-wrap:balance;overflow-wrap:break-word}'+
@@ -32,10 +48,13 @@ const CSS='*{box-sizing:border-box}html,body{padding:0;margin:0;width:1280px;hei
 export function makeThumbnailHTML(draft){
  if(!ID_RE.test(draft?.video_id||''))throw Error('invalid_video_id');
  const title=esc(safeThumbnailTitle(draft));
+ const sport= draft?.caption_status==='transcript_available' &&
+  /\bbasketball\b/i.test(String(draft.caption_excerpt||''));
  return '<!doctype html><html lang="en"><head><meta charset="utf-8">'+
   '<meta name="viewport" content="width=1280,initial-scale=1"><style>'+CSS+'</style></head><body>'+
   '<div class="stage"><div class="light"></div><div class="film"></div>'+
-  '<div class="ring"></div><div class="crest">IH</div><div class="accent"></div><div class="shade"></div>'+
+  '<div class="ring"></div>'+(sport?'<div class="basketball" aria-hidden="true"></div>':'<div class="crest">IH</div>')+
+  '<div class="accent"></div><div class="shade"></div>'+
   '<div class="left"><div class="tag">FEATURED VIDEO</div><div class="title">'+title+'</div>'+
   '<div class="footer"><span class="line"></span><span class="brand">INFAMOUSHUB</span></div></div>'+
   '<div class="right-label">INFAMOUSHUB.COM</div></div></body></html>';
