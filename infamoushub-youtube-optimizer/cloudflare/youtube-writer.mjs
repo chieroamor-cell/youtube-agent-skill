@@ -44,7 +44,7 @@ export function safeMetadataCandidate(video,draft,expectedChannel,{useAlternate=
  return {id:video.id,snippet};
 }
 export async function guardedPrivateUpdate({env,videoId,expectedChannel,draft,accessToken,
- fetchFn=fetch,thumbnailRenderer}={}){
+ fetchFn=fetch,thumbnailRenderer,beforeWrite}={}){
  if(env?.YOUTUBE_WRITE_ENABLED!=='YES')return {status:'disabled',changed:false,thumbnail_uploaded:false};
  if(draft?.status!=='approved')return {status:'requires_review',changed:false,thumbnail_uploaded:false};
  if(!idRE.test(videoId)||videoId!==draft?.video_id||!channelRE.test(expectedChannel))
@@ -77,6 +77,13 @@ export async function guardedPrivateUpdate({env,videoId,expectedChannel,draft,ac
   const png=picture.bytes;
   if(!(png instanceof Uint8Array)||png.length<5000||png.length>1950000||png[0]!==255||png[1]!==216)
    return {status:'thumbnail_invalid',changed:false,thumbnail_uploaded:false};
+  // Save exact original metadata BEFORE the first external write.
+  if(typeof beforeWrite==='function'){
+   try{
+    const archived=await beforeWrite({video,candidate,thumbnailSize:picture.size||png.length});
+    if(archived!==true)return {status:'backup_rejected',changed:false,thumbnail_uploaded:false};
+   }catch(e){return {status:'backup_failed',changed:false,thumbnail_uploaded:false};}
+  }
   const updated=await fetchFn('https://www.googleapis.com/youtube/v3/videos?part=snippet',{
    method:'PUT',headers:{...auth,'content-type':'application/json; charset=utf-8'},
    body:JSON.stringify(candidate),redirect:'manual'
@@ -90,7 +97,19 @@ export async function guardedPrivateUpdate({env,videoId,expectedChannel,draft,ac
    body:png,redirect:'manual'
   });
   if(!uploaded.ok||uploaded.status>=300)return {status:'metadata_updated_thumbnail_failed',changed:true,thumbnail_uploaded:false};
+  // Read back after applying. Never report successful end-to-end acceptance if
+  // YouTube changed privacy or persisted different title/description.
+  let post;
+  try{post=await get('https://www.googleapis.com/youtube/v3/videos?part=snippet%2Cstatus&id='+videoId);}
+  catch(e){return {status:'post_write_read_failed',changed:true,thumbnail_uploaded:true,verified:false};}
+  const confirmed=(Array.isArray(post.items)?post.items:[]).find(x=>x.id===videoId);
+  if(!confirmed||
+     confirmed.status?.privacyStatus!=='private'||
+     confirmed.snippet?.channelId!==expectedChannel||
+     confirmed.snippet?.title!==candidate.snippet.title||
+     confirmed.snippet?.description!==candidate.snippet.description)
+    return {status:'post_write_mismatch',changed:true,thumbnail_uploaded:true,verified:false};
   return {status:'completed_private_test',video_id:videoId,changed:true,thumbnail_uploaded:true,
-   privacy_untouched:true};
+   privacy_untouched:true,verified:true,actual_title:confirmed.snippet.title};
  }catch(e){return {status:'api_error',changed:metadataChanged,thumbnail_uploaded:false};}
 }
