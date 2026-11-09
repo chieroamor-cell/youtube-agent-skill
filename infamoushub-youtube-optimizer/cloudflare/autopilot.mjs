@@ -120,7 +120,7 @@ export async function saveOwnerInventory(env,channelId,videos){
 
 export async function getDrafts(env,channelId){
  if(!/^UC[A-Za-z0-9_-]{10,}$/.test(channelId))return [];
- const r=await env.YTDB.prepare('SELECT video_id,original_title,proposed_title,alternate_title,proposed_description,suggested_tags_json,thumbnail_brief,duration_seconds,privacy,status,created_at FROM optimizer_drafts WHERE channel_id=? ORDER BY created_at DESC,video_id DESC LIMIT 35').bind(channelId).all();
+ const r=await env.YTDB.prepare('SELECT video_id,original_title,proposed_title,alternate_title,proposed_description,suggested_tags_json,thumbnail_brief,thumbnail_headline,content_source,duration_seconds,privacy,status,created_at FROM optimizer_drafts WHERE channel_id=? ORDER BY created_at DESC,video_id DESC LIMIT 35').bind(channelId).all();
  return r.results||[];
 }
 
