@@ -745,3 +745,36 @@ test('signed-in thumbnail endpoint streams a real JPEG only from an owner draft'
   const b=new Uint8Array(await r.arrayBuffer());assert.equal(b.length,7200);assert.equal(b[0],255);assert.equal(b[1],216);
  }finally{globalThis.fetch=orig;}
 });
+
+
+test('captions analysis dashboard requires owner session before any D1 query',async()=>{
+ const env=readyEnv();
+ env.YTDB={prepare(){throw Error('Anonymous client must never access private transcript');}};
+ const r=await worker.fetch(request('/analysis/status'),env);
+ assert.equal(r.status,401);
+ assert.match(await r.text(),/Inicia sesión/);
+});
+test('caption dashboard hides full private content from untrusted visitors',async()=>{
+ const env=readyEnv(),owner='UC'+'a'.repeat(22);
+ env.YTDB={prepare(sql){
+  if(sql.startsWith('SELECT expires_at FROM oauth_admin_sessions'))
+   return {bind(){return {first:async()=>({expires_at:Math.floor(Date.now()/1000)+600})}}};
+  if(sql.startsWith('SELECT channel_id FROM oauth_channel'))
+   return {first:async()=>({channel_id:owner})};
+  if(sql.startsWith('SELECT c.video_id,c.status'))
+   return {bind(ch){assert.equal(ch,owner);return {all:async()=>({results:[{
+    video_id:'abcdefghijk',status:'transcript_available',language:'en',
+    excerpt_words:300,attempts:1,last_checked_at:'2026-11-09 06:00:00',
+    privacy:'private',title:'Private <title>',excerpt:'This shows <script> not trusted'
+   }]})}}};
+  throw Error('Unexpected SQL: '+sql);
+ }};
+ const r=await worker.fetch(request('/analysis/status',{headers:{cookie:'__Host-ihyt_admin='+'a'.repeat(50)}}),env);
+ assert.equal(r.status,200);
+ const html=await r.text();
+ assert.match(html,/Private &lt;title&gt;/);
+ assert.match(html,/This shows &lt;script&gt; not trusted/);
+ assert.doesNotMatch(html,/<script>/);
+ assert.match(html,/transcript_available/);
+ assert.equal(r.headers.get('cache-control'),'no-store');
+});
