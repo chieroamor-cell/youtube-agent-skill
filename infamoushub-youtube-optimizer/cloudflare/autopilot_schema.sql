@@ -20,3 +20,16 @@ CREATE TABLE IF NOT EXISTS optimizer_video_inventory (
  published_at TEXT, last_checked_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS optimizer_video_inventory_channel ON optimizer_video_inventory(channel_id,privacy);
+
+CREATE TABLE IF NOT EXISTS optimizer_caption_analysis (
+ video_id TEXT PRIMARY KEY,
+ channel_id TEXT NOT NULL,
+ status TEXT NOT NULL,
+ language TEXT NOT NULL DEFAULT '',
+ track_kind TEXT NOT NULL DEFAULT '',
+ transcript_excerpt TEXT NOT NULL DEFAULT '',
+ excerpt_words INTEGER NOT NULL DEFAULT 0,
+ attempts INTEGER NOT NULL DEFAULT 1,
+ last_checked_at TEXT NOT NULL DEFAULT(datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS optimizer_caption_channel_status ON optimizer_caption_analysis(channel_id,status);
