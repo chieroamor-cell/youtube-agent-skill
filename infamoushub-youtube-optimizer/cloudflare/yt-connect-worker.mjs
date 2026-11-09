@@ -213,7 +213,8 @@ async function thumbnailPreview(request,env){
  if(!/^[A-Za-z0-9_-]{11}$/.test(id))return html(nav('<p>ID del vídeo inválido.</p>'),400);
  const owner=await env.YTDB.prepare("SELECT channel_id FROM oauth_channel WHERE singleton=1 AND status='active'").first();
  if(!owner?.channel_id)return html(nav('<p>Canal sin conectar.</p>'),503);
- const draft=await env.YTDB.prepare('SELECT video_id,channel_id,original_title,thumbnail_brief,status FROM optimizer_drafts WHERE video_id=? AND channel_id=?')
+ const draft=await env.YTDB.prepare("SELECT d.video_id,d.channel_id,d.original_title,d.thumbnail_brief,d.thumbnail_headline,d.content_source,d.status,c.status AS caption_status,c.transcript_excerpt AS caption_excerpt "+
+  "FROM optimizer_drafts d LEFT JOIN optimizer_caption_analysis c ON c.video_id=d.video_id AND c.channel_id=d.channel_id WHERE d.video_id=? AND d.channel_id=?")
   .bind(id,owner.channel_id).first();
  if(!draft)return html(nav('<p>No hay propuesta aprobable para este vídeo. Prepara primero una propuesta SEO.</p>'),404);
  const result=await renderThumbnail(env,draft);
@@ -291,6 +292,7 @@ async function draftDashboard(request,env){
   '<p>Vídeo: <a rel="noopener noreferrer" href="https://www.youtube.com/watch?v='+escapeHtml(d.video_id)+'">'+escapeHtml(d.video_id)+'</a></p>'+
   '<p><strong>Título seguro:</strong> '+escapeHtml(d.proposed_title)+'</p>'+
   '<p><strong>Título alternativo para revisar:</strong> '+escapeHtml(d.alternate_title||'No disponible')+'</p>'+
+  '<p><strong>Origen de la propuesta:</strong> '+(d.content_source==='caption_excerpt'?'subtítulos del vídeo (revisión humana necesaria)':'solo título y descripción existentes')+'</p>'+
   '<p><strong>Etiquetas sugeridas:</strong> '+escapeHtml(safeDraftTags(d.suggested_tags_json))+'</p>'+
   '<p><strong>Descripción sugerida:</strong></p><pre style="white-space:pre-wrap;font:inherit;max-height:180px;overflow:auto">'+escapeHtml(d.proposed_description)+'</pre>'+
   '<p><strong>Miniatura de prueba (JPEG real, 1280×720):</strong> <a href="/drafts/thumbnail?video_id='+escapeHtml(d.video_id)+'">Ver y descargar miniatura</a></p>'+
@@ -372,7 +374,8 @@ async function applyPrivateDraft(request,env){
  const owner=await env.YTDB.prepare("SELECT channel_id FROM oauth_channel WHERE singleton=1 AND status='active'").first();
  if(!owner||!/^UC[A-Za-z0-9_-]{10,}$/.test(owner.channel_id||''))
   return html(nav('<p>Canal no válido.</p>'),503);
- const d=await env.YTDB.prepare('SELECT * FROM optimizer_drafts WHERE video_id=? AND channel_id=?').bind(id,owner.channel_id).first();
+ const d=await env.YTDB.prepare("SELECT d.*,c.status AS caption_status,c.transcript_excerpt AS caption_excerpt FROM optimizer_drafts d "+
+  "LEFT JOIN optimizer_caption_analysis c ON c.video_id=d.video_id AND c.channel_id=d.channel_id WHERE d.video_id=? AND d.channel_id=?").bind(id,owner.channel_id).first();
  if(!d||d.status!=='approved'||d.privacy!=='private'||!d.approved_at)
   return html(nav('<p>Solo puedes aplicar un borrador aprobado de un vídeo privado.</p>'),409);
  const lock=await env.YTDB.prepare(
