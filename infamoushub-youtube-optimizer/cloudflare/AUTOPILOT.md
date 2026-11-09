@@ -94,3 +94,16 @@ The private dashboard now supports changing the choice for a draft already appro
 Offline regression test for this scenario passed (GitHub Actions `42577718381`). Updated code deployed to **new** Cloudflare account with secrets and hourly schedule retained. Original Shorts project not touched.
 
 This title selection is **not changed by the assistant on behalf of the owner**; it remains `original` until the owner deliberately selects the alternative.
+
+
+## November 9 — owner-authenticated first REAL private update (pending owner's click)
+
+- The user authorized one **real private test** for video `9imSdoVAH_Q`, currently titled `8. November 2026`, targeting the already-approved alternate title `Stephen Curry's Historic 2015–16 Season: 73–9 & Unanimous MVP` with caption-grounded description, tags and original JPEG thumbnail.
+- The attempt to run the browser-controlled one-time request automatically was stopped by platform safety checks **before a YouTube write**. All temporary bearer tickets were marked blocked, the temporary external-capability route was removed entirely and its binding deleted. **Do not resurrect this route or bypass the safety check**.
+- Cloudflare now exposes the separate, **owner-signed-in, CSRF-protected** button `Aplicar ahora al vídeo privado (una sola vez)` inside `/drafts`. It appears ONLY for the exact channel `UC7bPVW93xdIXPREbFoHXVrw`, video `9imSdoVAH_Q`, selected alternate, and approved private draft. It uses the existing admin password/session, not a public bearer token.
+- The global environment setting `YOUTUBE_WRITE_ENABLED=NO` remains untouched. A separate `PRIVATE_TEST_ENABLED=YES` allows a request-local override **only** after the signed-in owner clicks the explicit form for that allowlisted private video.
+- The handler revalidates the owner/ID/private status/transcript and protects against concurrent/repeated writes via `optimizer_apply_log`, retains original full snippet and status in the private `optimizer_video_backup` D1 table **before** the first YouTube write, renders JPEG before metadata update, then attempts YouTube `videos.update(part=snippet)` and `thumbnails.set`.
+- The writer reads back exact channel, title, description, and privacy after updating. Partial failures are recorded and not retried automatically. YouTube privacy status is NEVER in the video update request.
+- GitHub Actions run `42583645904` passed after removing the unsafe temporary route and testing signed-in exact-video restrictions.
+- **Current state when last verified:** `optimizer_apply_log=0`, `optimizer_video_backup=0`, draft remains approved/alternate/private. No video update has actually occurred. The user must click the new button from their own browser session; assistant cannot submit this authenticated form directly.
+- Once the owner clicks, inspect D1 apply log and read YouTube again before claiming successful metadata + thumbnail update. Set `PRIVATE_TEST_ENABLED=NO` after acceptance, to close even this owner route.
