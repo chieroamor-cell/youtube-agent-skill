@@ -804,3 +804,88 @@ test('signed-in captions check fails closed when disabled, without touching YouT
   assert.match(await r.text(),/disabled/);
  }finally{globalThis.fetch=original;}
 });
+
+
+test('approved private title can be corrected to alternate only with owner CSRF, fresh YouTube verification and no apply attempts',async()=>{
+ const env=readyEnv();
+ const owner='UC'+'q'.repeat(22),id='abcdefghijk';
+ const title='8. November 2026';
+ const draft={video_id:id,original_title:title,alternate_title:"Stephen Curry's Historic 2015–16 Season: 73–9 & Unanimous MVP",
+  selected_title:'original',privacy:'private',status:'approved'};
+ const key=Buffer.alloc(32,29),iv=crypto.getRandomValues(new Uint8Array(12));
+ env.OAUTH_TOKEN_KEY_B64=key.toString('base64');
+ const encryption=await crypto.subtle.importKey('raw',key,'AES-GCM',false,['encrypt']);
+ const ciphertext=await crypto.subtle.encrypt({name:'AES-GCM',iv,additionalData:new TextEncoder().encode(owner)},encryption,new TextEncoder().encode('test-refresh-token'));
+ const tokenRow={channel_id:owner,token_iv:Buffer.from(iv).toString('base64url'),token_ct:Buffer.from(ciphertext).toString('base64url')};
+ let applyAttempt=false,updates=0;
+ env.YTDB={prepare(sql){
+  const sqlText=sql;
+  return {bind(...args){return {
+    async first(){
+     if(sqlText.startsWith('SELECT expires_at FROM oauth_admin_sessions'))return {expires_at:Math.floor(Date.now()/1000)+600};
+     if(sqlText.startsWith('SELECT channel_id FROM oauth_channel'))return {channel_id:owner};
+     if(sqlText.startsWith('SELECT video_id,original_title,alternate_title,selected_title,privacy,status FROM optimizer_drafts'))
+      return draft;
+     if(sqlText.startsWith('SELECT state FROM optimizer_apply_log'))return applyAttempt?{state:'started'}:null;
+     if(sqlText.startsWith('SELECT channel_id,token_iv,token_ct FROM oauth_channel'))return tokenRow;
+     throw Error('Unexpected SELECT '+sqlText);
+    },
+    async run(){
+     assert.match(sqlText,/UPDATE optimizer_drafts SET selected_title/);
+     assert.match(sqlText,/NOT EXISTS \(SELECT 1 FROM optimizer_apply_log/);
+     assert.equal(args[0],'alternate');
+     assert.equal(args[1],id);assert.equal(args[2],owner);
+     if(applyAttempt)return {meta:{changes:0}};
+     updates++;draft.selected_title='alternate';return {meta:{changes:1}};
+    }
+   };},first:async()=>{
+    if(sqlText.startsWith('SELECT channel_id FROM oauth_channel'))return {channel_id:owner};
+    if(sqlText.startsWith('SELECT channel_id,token_iv,token_ct FROM oauth_channel'))return tokenRow;
+    throw Error('Unexpected direct SELECT '+sqlText);
+   }};
+ }};
+ const {code:csrf,cookie:csrfCookie}=await extractCsrf(env);
+ const admin='__Host-ihyt_admin='+'a'.repeat(50);
+ const originalFetch=globalThis.fetch;
+ let requests=0;
+ globalThis.fetch=async(url,options)=>{
+  requests++;assert.equal(options.redirect,'manual');
+  if(requests===1){
+   assert.equal(options.method,'POST');
+   assert.equal(String(url),'https://oauth2.googleapis.com/token');
+   return Response.json({access_token:'test-access-token'});
+  }
+  assert.equal(options.method,'GET');
+  if(requests===2)return Response.json({items:[{id:owner,contentDetails:{relatedPlaylists:{uploads:'UUownedPlaylist'}}}]});
+  if(requests===3)return Response.json({items:[{contentDetails:{videoId:id}}]});
+  if(requests===4)return Response.json({items:[{id,snippet:{title,channelId:owner,publishedAt:'2026-11-08T15:00:00Z'},status:{privacyStatus:'private'},contentDetails:{duration:'PT6M13S'}}]});
+  throw Error('No video write calls allowed');
+ };
+ try{
+  const requestOptions={method:'POST',headers:{'content-type':'application/x-www-form-urlencoded','origin':'null','cookie':admin+'; '+csrfCookie},
+   body:new URLSearchParams({csrf,video_id:id,title_choice:'alternate',reviewed:'on'})};
+  const response=await worker.fetch(request('/drafts/approve',requestOptions),env);
+  const html=await response.text();
+  assert.equal(response.status,200,html);
+  assert.match(html,/Elección de título corregida/);
+  assert.match(html,/alternat/);
+  assert.equal(updates,1);
+  assert.equal(draft.selected_title,'alternate');
+  assert.equal(requests,4);
+  // The same approved draft cannot be amended after a recorded write attempt.
+  applyAttempt=true;requests=0;
+  const blocked=await worker.fetch(request('/drafts/approve',requestOptions),env);
+  assert.equal(blocked.status,409);
+  assert.match(await blocked.text(),/intento de actualización registrado/);
+  assert.equal(updates,1);
+  assert.equal(requests,0);
+ }finally{globalThis.fetch=originalFetch;}
+});
+test('anonymous owner title revision is rejected before checking the draft',async()=>{
+ const env=readyEnv();env.YTDB={prepare(){throw Error('Never read DB for an anonymous user');}};
+ const r=await worker.fetch(request('/drafts/approve',{
+  method:'POST',headers:{'content-type':'application/x-www-form-urlencoded'},
+  body:new URLSearchParams({video_id:'abcdefghijk',title_choice:'alternate',reviewed:'on'})
+ }),env);
+ assert.equal(r.status,401);
+});
