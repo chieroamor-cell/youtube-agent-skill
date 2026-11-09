@@ -90,7 +90,8 @@ export async function inspectNextVideoCaptions(env,ownerAccess,fetchFn=fetch){
  if(env.CAPTION_INSPECTION!=='YES')return {status:'disabled'};
  const candidate=await findCaptionCandidate(env);
  if(!candidate)return {status:'no_candidate'};
- if(candidate.channel_id!=='UC7bPVW93xdIXPREbFoHXVrw')return {status:'unexpected_channel'};
+ const connected=await env.YTDB.prepare("SELECT channel_id FROM oauth_channel WHERE singleton=1 AND status='active'").first();
+ if(!connected||candidate.channel_id!==connected.channel_id)return {status:'unexpected_channel'};
  // Never proceed with captions.list unless the owner token is available.
  const token=await ownerAccess(env,candidate.channel_id);
  if(!token)return {status:'token_unavailable'};
