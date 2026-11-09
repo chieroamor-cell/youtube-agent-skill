@@ -58,3 +58,24 @@ The connected owner channel has **one verified private long video**, `9imSdoVAH_
 - **Google OAuth warning:** If the app is External/Testing in Google Cloud, Google says refresh tokens for YouTube scopes usually expire after **7 days**. The current client's publishing mode was not verified. This needs checking before claiming lasting unattended automation. See Google's OAuth documentation: <https://developers.google.com/identity/protocols/oauth2/#expiration>.
 
 This work does not use a paid AI API, subscription, or external video generator. Only the user's new independent Cloudflare account was updated; Shorts and the old account stay untouched.
+
+
+## Update — first transcript-grounded SEO proposal (2026-11-09)
+
+The read-only captions job successfully downloaded private English auto-captions from the owner's video `9imSdoVAH_Q` (original YouTube title `8. November 2026`). It revealed the video's actual subject: **Stephen Curry's historic 2015–16 NBA season**. The caption excerpt mentions the Golden State Warriors' 73–9 season and Curry becoming the first unanimous NBA MVP. Those facts were independently cross-checked against the official NBA announcement: <https://pr.nba.com/stephen-curry-2015-16-kia-nba-mvp-award-warriors/>.
+
+A **single existing private, not-yet-approved D1 draft** was updated, not the real YouTube video:
+
+- Alternative English title: `Stephen Curry's Historic 2015–16 Season: 73–9 & Unanimous MVP`
+- Description: a grounded 2015–16 season synopsis, 24-game unbeaten start, deep threes, first unanimous MVP, with the NBA source, InfamousHub website and three relevant hashtags
+- Tags: Steph/Stephen Curry, Warriors, 73–9, 2015–16 season, unanimous MVP, basketball history
+- New headline: `STEPH CURRY: 73–9 SEASON`
+- `content_source=caption_excerpt`; `status=needs_review`, `approved_at=NULL`
+
+Thumbnail rendering now cross-checks every significant headline token against the **same video's** stored caption excerpt. Without a matching caption, it safely falls back to the original video title. For this video, it may draw original abstract basketball graphics alongside the verified headline. It does not use unlicensed player photos.
+
+Database migration `2026-11-09-thumbnail-evidence.sql` added `thumbnail_headline` and `content_source` to the D1 draft table. Worker code and offline GitHub tests were updated and deployed with existing bindings inherited.
+
+**No YouTube changes.** In Cloudflare `YOUTUBE_WRITE_ENABLED=NO`, `optimizer_apply_log=0`, and the draft remains private and pending human review. The user must open `/connect` → `Propuestas SEO` → `Ver y descargar miniatura` and decide whether the real video and image match. Do not instruct the user to check a box asserting image/content review before actually examining the preview and rights.
+
+**Automation limitation:** Future topics are not guaranteed to receive quality optimized descriptions automatically from generic captions without an independently validated generation step; this first user-owned video was corrected using transcript evidence plus an official sports primary source. Do not claim a general AI transcript-to-SEO system is complete or live YouTube writes are enabled.
