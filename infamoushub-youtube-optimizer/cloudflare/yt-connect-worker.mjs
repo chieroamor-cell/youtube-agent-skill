@@ -243,6 +243,7 @@ async function captionAnalysisDashboard(request,env){
   "FROM optimizer_caption_analysis c INNER JOIN optimizer_video_inventory v ON v.video_id=c.video_id AND v.channel_id=c.channel_id "+
   "WHERE c.channel_id=? ORDER BY c.last_checked_at DESC LIMIT 10")
   .bind(owner.channel_id).all();
+ const csrf=rnd(32);
  const items=(r.results||[]).map(x=>'<section style="padding:12px 0;border-bottom:1px solid #aaa">'+
   '<h3>'+escapeHtml(x.title||x.video_id)+'</h3>'+
   '<p>Estado de subtítulos: '+escapeHtml(x.status)+' · idioma: '+escapeHtml(x.language||'desconocido')+
@@ -258,7 +259,22 @@ async function captionAnalysisDashboard(request,env){
   '. Una revisión privada se realiza como máximo para un vídeo pendiente en cada ejecución, con reintentos limitados cada 72 horas.</p>'+
   '<p>El análisis no cambia vídeos ni genera afirmaciones inventadas.</p>'+
   (items||'<p>La primera comprobación de subtítulos aún no tiene resultados registrados.</p>')+
-  '<p><a href="/drafts">Propuestas SEO</a> · <a href="/connect">Volver al panel</a></p>');
+  '<form method="post" action="/analysis/check">'+csrfInput(csrf)+
+  '<button type="submit">Comprobar subtítulos ahora (solo lectura)</button></form>'+
+  '<p><a href="/drafts">Propuestas SEO</a> · <a href="/connect">Volver al panel</a></p>',
+  200,{'set-cookie':csrfHeader(csrf)});
+}
+async function manualCaptionCheck(request,env){
+ if(!ready(env))return html('<p>Conexión no disponible.</p>',503);
+ if(!await adminSession(request,env))return html(nav('<p>Sesión caducada. Entra antes de analizar el vídeo.</p>'),401);
+ await form(request);
+ let result;
+ try{result=await inspectNextVideoCaptions(env,ownerToken);}
+ catch(e){result={status:'analysis_failed_safely'};}
+ return html('<h2>Comprobación de subtítulos</h2>'+
+  '<p>Resultado: '+escapeHtml(result.status||'unknown')+'</p>'+
+  '<p>No se ha modificado ningún vídeo ni miniatura en YouTube.</p>'+
+  '<p><a href="/analysis/status">Ver resultado</a> · <a href="/connect">Volver al panel</a></p>');
 }
 
 // Private preview queue: drafts only, never an API write to YouTube.
@@ -646,6 +662,7 @@ export default {
    if(u.pathname==='/drafts/prepare'&&request.method==='POST')return await prepareDraftManually(request,env);
    if(u.pathname==='/watch/status'&&request.method==='GET')return await watchStatus(request,env);
    if(u.pathname==='/analysis/status'&&request.method==='GET')return await captionAnalysisDashboard(request,env);
+   if(u.pathname==='/analysis/check'&&request.method==='POST')return await manualCaptionCheck(request,env);
    if(u.pathname==='/watch/scan'&&request.method==='POST')return await manualScan(request,env);
    if(u.pathname==='/session/login'&&request.method==='POST')return await login(request,env);
    if(u.pathname==='/session/logout'&&request.method==='POST')return await logout(request,env);
