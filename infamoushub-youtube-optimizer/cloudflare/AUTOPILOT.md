@@ -79,3 +79,18 @@ Database migration `2026-11-09-thumbnail-evidence.sql` added `thumbnail_headline
 **No YouTube changes.** In Cloudflare `YOUTUBE_WRITE_ENABLED=NO`, `optimizer_apply_log=0`, and the draft remains private and pending human review. The user must open `/connect` → `Propuestas SEO` → `Ver y descargar miniatura` and decide whether the real video and image match. Do not instruct the user to check a box asserting image/content review before actually examining the preview and rights.
 
 **Automation limitation:** Future topics are not guaranteed to receive quality optimized descriptions automatically from generic captions without an independently validated generation step; this first user-owned video was corrected using transcript evidence plus an official sports primary source. Do not claim a general AI transcript-to-SEO system is complete or live YouTube writes are enabled.
+
+## 2026-11-09 — approved-title correction without any YouTube writes
+
+The owner approved video `9imSdoVAH_Q` from the protected browser form but selected **original** (`8. November 2026`) rather than the caption-grounded SEO alternative (`Stephen Curry's Historic 2015–16 Season: 73–9 & Unanimous MVP`). This approval **did not change YouTube**. Cloudflare confirmed `status=approved`, `selected_title=original`, `privacy=private`, and `optimizer_apply_log` contains **zero attempts**.
+
+The private dashboard now supports changing the choice for a draft already approved:
+- Go to **Propuestas SEO** while signed in.
+- Under the video, view **Elección aprobada actualmente**.
+- Choose **Usar título alternativo después de revisión**, check the editorial confirmation only after actually reviewing the video and thumbnail, then click **Cambiar título aprobado (solo borrador)**.
+- The endpoint again validates the exact owner, private status, unchanged original video title, admin session + CSRF and performs an atomic `NOT EXISTS(optimizer_apply_log)` check. It refuses changes after any write attempt.
+- The newly selected title remains in D1 only. `YOUTUBE_WRITE_ENABLED=NO` is preserved; no code path can edit YouTube without a separately approved private write acceptance.
+
+Offline regression test for this scenario passed (GitHub Actions `42577718381`). Updated code deployed to **new** Cloudflare account with secrets and hourly schedule retained. Original Shorts project not touched.
+
+This title selection is **not changed by the assistant on behalf of the owner**; it remains `original` until the owner deliberately selects the alternative.
