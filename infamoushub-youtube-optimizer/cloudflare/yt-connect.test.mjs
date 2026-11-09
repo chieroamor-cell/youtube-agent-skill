@@ -778,3 +778,29 @@ test('caption dashboard hides full private content from untrusted visitors',asyn
  assert.match(html,/transcript_available/);
  assert.equal(r.headers.get('cache-control'),'no-store');
 });
+
+
+test('manual captions check requires an authenticated admin session',async()=>{
+ const env=readyEnv();
+ env.YTDB={prepare(){throw Error('Anonymous access must not touch owner data');}};
+ const r=await worker.fetch(request('/analysis/check',{
+  method:'POST',headers:{'content-type':'application/x-www-form-urlencoded'},
+  body:new URLSearchParams({csrf:'anything'})
+ }),env);
+ assert.equal(r.status,401);
+});
+test('signed-in captions check fails closed when disabled, without touching YouTube',async()=>{
+ const {env,sessionCookie,csrf,csrfCookie}=await loggedIn();
+ env.CAPTION_INSPECTION='NO';
+ const original=globalThis.fetch;
+ globalThis.fetch=async()=>{throw Error('Do not contact YouTube when caption checking is disabled');};
+ try{
+  const r=await worker.fetch(request('/analysis/check',{
+   method:'POST',headers:{'content-type':'application/x-www-form-urlencoded',
+    cookie:sessionCookie+'; '+csrfCookie,'origin':'null'},
+   body:new URLSearchParams({csrf})
+  }),env);
+  assert.equal(r.status,200);
+  assert.match(await r.text(),/disabled/);
+ }finally{globalThis.fetch=original;}
+});
