@@ -44,3 +44,17 @@ Browser Run includes **10 minutes per day** on Cloudflare Workers Free; operatio
 - Public `/health` confirms `edits_enabled=false`, `uploads_enabled=false`, `publication_enabled=false`.
 
 GitHub: <https://github.com/chieroamor-cell/youtube-agent-skill/pull/2>.
+
+## Update v0.4.2 — Owned-video caption evidence (2026-11-09)
+
+The connected owner channel has **one verified private long video**, `9imSdoVAH_Q` — `8. November 2026` — duration **373 seconds**. It has no existing YouTube description, and the current proposal is intentionally conservative; do not invent a video topic from the date.
+
+- An hourly owner-only **captions inspector** is deployed under `CAPTION_INSPECTION=YES`, running after the read-only upload scan. It checks at most one eligible private video per scan, saves at most 4,000 transcript characters privately in D1 if captions are downloadable, and does not alter YouTube.
+- `captions.list` uses the Google OAuth scope already granted, requires the exact owner and video, and can cost **50 YouTube quota units**; `captions.download` costs **200 units** if a usable track exists. Tracks are only retried (if absent) every **72 hours**, at most three attempts, to stay within a conservative portion of the free API quota.
+- The admin dashboard now has **Análisis de subtítulos**, with a protected **Comprobar subtítulos ahora (solo lectura)** button and a private excerpt viewer. No credentials or private transcripts are published anonymously.
+- These features are implemented and GitHub CI passed, but **as of deployment there was no live captions result in D1**. A scheduled trigger and passing mocked tests are not proof that a real transcript was downloaded.
+- The real title-based Cloudflare image generator has also been tested with this exact private video title, returning a **49,446-byte valid JPEG**. The isolated smoke Worker was deleted afterward. This validates the on-demand image renderer, **not a thumbnail upload to YouTube**.
+- The first private upload acceptance still requires an approved factual draft and review of the image. `YOUTUBE_WRITE_ENABLED=NO` remains enforced, and **0 apply attempts** are recorded.
+- **Google OAuth warning:** If the app is External/Testing in Google Cloud, Google says refresh tokens for YouTube scopes usually expire after **7 days**. The current client's publishing mode was not verified. This needs checking before claiming lasting unattended automation. See Google's OAuth documentation: <https://developers.google.com/identity/protocols/oauth2/#expiration>.
+
+This work does not use a paid AI API, subscription, or external video generator. Only the user's new independent Cloudflare account was updated; Shorts and the old account stay untouched.
