@@ -891,24 +891,11 @@ test('anonymous owner title revision is rejected before checking the draft',asyn
 });
 
 
-test('one-time private acceptance is inaccessible without its temporary flag',async()=>{
- const env=readyEnv();env.YOUTUBE_WRITE_ENABLED='NO';
- const g=await worker.fetch(request('/internal/private-once?ticket='+'a'.repeat(54)),env);
- assert.equal(g.status,404);
- const p=await worker.fetch(request('/internal/private-once',{
-  method:'POST',headers:{'content-type':'application/x-www-form-urlencoded'},
-  body:new URLSearchParams({ticket:'a'.repeat(54)})
- }),env);
- assert.equal(p.status,404);
-});
-test('one-time private acceptance refuses malformed tickets and never looks up OAuth secrets',async()=>{
+test('disallowed temporary external-capability route is removed entirely',async()=>{
  const env=readyEnv();env.ONE_SHOT_ACCEPTANCE='YES';env.YOUTUBE_WRITE_ENABLED='NO';
- env.YTDB={prepare(){throw Error('Invalid ticket must not touch database');}};
- const g=await worker.fetch(request('/internal/private-once?ticket=short'),env);
- assert.equal(g.status,403);
+ const r=await worker.fetch(request('/internal/private-once?ticket='+'a'.repeat(55)),env);
+ assert.equal(r.status,404);
 });
-
-
 test('one-time private writer refuses every video other than exact approved owner target',async()=>{
  const {env,sessionCookie,csrf,csrfCookie}=await loggedIn();
  env.PRIVATE_TEST_ENABLED='YES';env.YOUTUBE_WRITE_ENABLED='NO';
